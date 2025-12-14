@@ -1,0 +1,81 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ultrathink"
+version = "0.1.0"
+description = "AI-powered coding assistant built on deepagent"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "ly0" }
+]
+keywords = ["ai", "assistant", "coding", "deepagent", "langchain"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+
+dependencies = [
+    "deepagents>=0.1.0",
+    "langchain>=0.3.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "langchain-mcp-adapters>=0.1.0",
+    "langgraph>=0.2.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "prompt-toolkit>=3.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "aiofiles>=23.0.0",
+    "python-dotenv>=1.0.0",
+    "PyYAML>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+ultrathink = "ultrathink.cli.main:cli"
+ut = "ultrathink.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/ly0/ultrathink"
+Documentation = "https://github.com/ly0/ultrathink#readme"
+Repository = "https://github.com/ly0/ultrathink"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ultrathink"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
