@@ -12,10 +12,12 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
 from ultrathink.core.config import (
+    ModelProfile,
     ProviderType,
     config_manager,
     get_api_key,
     get_base_url,
+    get_model_profile,
     get_model_string,
 )
 from ultrathink.core.session import ConversationSession
@@ -59,21 +61,42 @@ def get_default_subagents() -> List[Dict[str, Any]]:
 
 def init_model(
     model_string: Optional[str] = None,
-    temperature: float = 0.7,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
     base_url: Optional[str] = None,
+    profile: Optional[ModelProfile] = None,
     **kwargs: Any,
 ) -> BaseChatModel:
     """Initialize a LangChain chat model.
 
     Args:
         model_string: Model identifier in format 'provider:model' (e.g., 'anthropic:claude-sonnet-4-20250514')
-        temperature: Sampling temperature
+        temperature: Sampling temperature (overrides profile setting)
+        max_tokens: Maximum tokens to generate (overrides profile setting)
         base_url: Custom API base URL (overrides environment/config)
+        profile: ModelProfile to use for settings (if not provided, uses default profile)
         **kwargs: Additional model configuration
 
     Returns:
         Initialized chat model
     """
+    # Get profile for default settings
+    if profile is None:
+        profile = get_model_profile("main")
+
+    # Use profile defaults if not explicitly provided
+    if profile:
+        if temperature is None:
+            temperature = profile.temperature
+        if max_tokens is None:
+            max_tokens = profile.max_tokens
+    else:
+        # Fallback defaults
+        if temperature is None:
+            temperature = 0.7
+        if max_tokens is None:
+            max_tokens = 8192
+
     if model_string is None:
         model_string = get_model_string()
 
@@ -100,6 +123,7 @@ def init_model(
             api_key=api_key or "",
             base_url=base_url or "https://api.deepseek.com/v1",
             temperature=0.0,  # Reasoner works best with temperature 0
+            max_tokens=max_tokens,
             **kwargs,
         )
 
@@ -112,11 +136,12 @@ def init_model(
             api_key=api_key or "",
             base_url=base_url or "https://api.deepseek.com/v1",
             temperature=temperature,
+            max_tokens=max_tokens,
             **kwargs,
         )
 
     # Build kwargs for model initialization
-    model_kwargs = {"temperature": temperature, **kwargs}
+    model_kwargs = {"temperature": temperature, "max_tokens": max_tokens, **kwargs}
 
     if provider == ProviderType.ANTHROPIC:
         if api_key:

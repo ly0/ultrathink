@@ -141,6 +141,70 @@ def _verbose_handler(ui: Any, arg: str) -> None:
     ui.console.print(f"[cyan]Verbose mode:[/cyan] {status}")
 
 
+def _agents_handler(ui: Any, arg: str) -> None:
+    """List available subagents."""
+    from pathlib import Path
+    from rich.table import Table
+    from rich.text import Text
+    from ultrathink.subagents.loader import load_all_subagents
+    from ultrathink.subagents.definitions import AgentLocation
+
+    # Get working directory for project agents
+    cwd = getattr(ui, "cwd", None) or Path.cwd()
+
+    agents = load_all_subagents(project_path=cwd)
+
+    if not agents:
+        ui.console.print("[yellow]No agents found.[/yellow]")
+        return
+
+    # Show specific agent details if name provided
+    if arg:
+        agent_name = arg.strip().lower()
+        for agent in agents:
+            if agent.name.lower() == agent_name:
+                ui.console.print(f"\n[bold cyan]Agent: {agent.name}[/bold cyan]")
+                ui.console.print(f"[dim]Location:[/dim] {agent.location.value}")
+                ui.console.print(f"[dim]Description:[/dim] {agent.description}")
+                if agent.tools:
+                    ui.console.print(f"[dim]Tools:[/dim] {', '.join(agent.tools)}")
+                if agent.model:
+                    ui.console.print(f"[dim]Model:[/dim] {agent.model}")
+                ui.console.print("\n[dim]System Prompt:[/dim]")
+                ui.console.print(agent.system_prompt)
+                return
+        ui.console.print(f"[red]Agent '{arg}' not found.[/red]")
+        return
+
+    # Location color mapping
+    location_colors = {
+        AgentLocation.BUILTIN: "blue",
+        AgentLocation.USER: "green",
+        AgentLocation.PROJECT: "yellow",
+    }
+
+    table = Table(title="Available Agents", show_header=True)
+    table.add_column("Name", style="cyan")
+    table.add_column("Location", style="dim")
+    table.add_column("Description", style="white", max_width=50)
+    table.add_column("Tools", style="dim", max_width=30)
+
+    for agent in agents:
+        location_text = Text(agent.location.value, style=location_colors.get(agent.location, "white"))
+        tools_str = ", ".join(agent.tools[:3])
+        if len(agent.tools) > 3:
+            tools_str += f" (+{len(agent.tools) - 3})"
+        table.add_row(
+            agent.name,
+            location_text,
+            agent.description[:50] + "..." if len(agent.description) > 50 else agent.description,
+            tools_str,
+        )
+
+    ui.console.print(table)
+    ui.console.print("\n[dim]Use /agents <name> to see details for a specific agent.[/dim]")
+
+
 # Register built-in commands
 register_command(SlashCommand(
     name="help",
@@ -193,4 +257,11 @@ register_command(SlashCommand(
     description="Toggle verbose mode",
     handler=_verbose_handler,
     aliases=["v"],
+))
+
+register_command(SlashCommand(
+    name="agents",
+    description="List available subagents",
+    handler=_agents_handler,
+    usage="/agents [name]",
 ))

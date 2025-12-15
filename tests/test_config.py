@@ -45,19 +45,22 @@ class TestModelProfile:
         profile = ModelProfile()
         assert profile.provider == ProviderType.ANTHROPIC
         assert profile.model == "claude-sonnet-4-20250514"
-        assert profile.max_tokens == 16384
+        assert profile.max_tokens == 8192
+        assert profile.context_length == 131072
         assert profile.temperature == 0.7
 
     def test_custom_values(self):
         profile = ModelProfile(
             provider=ProviderType.OPENAI,
             model="gpt-4",
-            max_tokens=8192,
+            max_tokens=4096,
+            context_length=32768,
             temperature=0.5,
         )
         assert profile.provider == ProviderType.OPENAI
         assert profile.model == "gpt-4"
-        assert profile.max_tokens == 8192
+        assert profile.max_tokens == 4096
+        assert profile.context_length == 32768
         assert profile.temperature == 0.5
 
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner as RichSpinner
+from rich.table import Table
 from rich.text import Text
 
 
@@ -60,6 +61,7 @@ class ThinkingSpinner:
     - Elapsed time in seconds
     - Input/output token counts
     - Optional status suffix
+    - Model status bar at the bottom
     """
 
     def __init__(
@@ -67,6 +69,7 @@ class ThinkingSpinner:
         console: Console,
         prompt_tokens: int = 0,
         spinner_style: str = "dots",
+        status_func: Optional[Callable[[], str]] = None,
     ) -> None:
         """Initialize the thinking spinner.
 
@@ -74,6 +77,7 @@ class ThinkingSpinner:
             console: Rich console for output
             prompt_tokens: Number of input tokens (for display)
             spinner_style: Rich spinner animation style
+            status_func: Optional callable that returns model status string
         """
         self.console = console
         self.prompt_tokens = prompt_tokens
@@ -84,6 +88,7 @@ class ThinkingSpinner:
         self._live: Optional[Live] = None
         self._running = False
         self._current_suffix: Optional[str] = None
+        self._status_func = status_func
 
     def _format_text(self, suffix: Optional[str] = None) -> Text:
         """Format the spinner text with current state.
@@ -134,15 +139,41 @@ class ThinkingSpinner:
 
         return text
 
+    def _make_renderable(self, suffix: Optional[str] = None) -> Table:
+        """Create a renderable with spinner and status bar.
+
+        Args:
+            suffix: Optional status message to append to spinner
+
+        Returns:
+            Table containing spinner and status bar
+        """
+        # Create a table with no borders for layout
+        table = Table.grid(expand=True)
+        table.add_column(ratio=1)
+
+        # Add spinner row
+        spinner_text = self._format_text(suffix)
+        spinner = RichSpinner(self._spinner_style, text=spinner_text)
+        table.add_row(spinner)
+
+        # Add status bar row if status_func is provided
+        if self._status_func:
+            status_text = Text()
+            status_text.append(" " + self._status_func() + " ", style="reverse dim")
+            table.add_row(status_text)
+
+        return table
+
     def start(self) -> None:
         """Start the spinner animation."""
         if self._running:
             return
 
         self._running = True
-        spinner = RichSpinner(self._spinner_style, text=self._format_text())
+        renderable = self._make_renderable()
         self._live = Live(
-            spinner,
+            renderable,
             console=self.console,
             refresh_per_second=10,
             transient=True,
@@ -168,9 +199,8 @@ class ThinkingSpinner:
         if not self._running or not self._live:
             return
 
-        display_text = text or self._format_text(self._current_suffix)
-        spinner = RichSpinner(self._spinner_style, text=display_text)
-        self._live.update(spinner)
+        renderable = self._make_renderable(self._current_suffix)
+        self._live.update(renderable)
 
     def update_tokens(self, out_tokens: int, suffix: Optional[str] = None) -> None:
         """Update the output token count and optional suffix.

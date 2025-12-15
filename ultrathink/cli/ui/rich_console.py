@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ultrathink import __version__
+from ultrathink.core.config import ModelProfile, get_model_profile, get_model_string
 from ultrathink.core.session import ConversationSession
 from ultrathink.cli.ui.message_renderer import render_message, render_tool_use, render_error
 from ultrathink.cli.ui.thinking_spinner import ThinkingSpinner
@@ -27,6 +28,8 @@ from ultrathink.cli.ui.thinking_spinner import ThinkingSpinner
 # Prompt toolkit style
 PROMPT_STYLE = Style.from_dict({
     "prompt": "cyan bold",
+    "status-bar": "bg:ansibrightblack fg:ansiwhite",
+    "status-bar.text": "bg:ansibrightblack fg:ansiwhite",
 })
 
 
@@ -38,6 +41,7 @@ SLASH_COMMANDS = {
     "/stats": "Show session statistics",
     "/compact": "Compact conversation history",
     "/models": "Manage model profiles and aliases",
+    "/agents": "List available subagents",
     "/exit": "Exit Ultrathink",
     "/quit": "Exit Ultrathink",
 }
@@ -164,6 +168,7 @@ class UltrathinkUI:
         self.session = ConversationSession()
         self._agent = None
         self._should_exit = False
+        self._context_tokens = 0  # Track current context token usage
 
         # Set up prompt history
         history_path = Path.home() / ".ultrathink_history"
@@ -178,6 +183,50 @@ class UltrathinkUI:
             completer=SlashCommandCompleter(),
             complete_while_typing=True,
         )
+
+    def _get_model_status(self) -> str:
+        """Get model status string for the toolbar.
+
+        Returns:
+            Status string like '[deepseek] deepseek-reasoner: 0k / 131k'
+        """
+        # Get current model profile
+        profile = get_model_profile("main")
+        if profile:
+            provider = profile.provider.value
+            model = profile.model
+            context_length = profile.context_length
+        else:
+            # Fallback to model string parsing
+            model_str = self.model or get_model_string()
+            if ":" in model_str:
+                provider, model = model_str.split(":", 1)
+            else:
+                provider = "anthropic"
+                model = model_str
+            context_length = 131072  # Default
+
+        # Format context usage
+        context_used_k = self._context_tokens / 1000
+        context_max_k = context_length / 1000
+
+        # Format as "0k" or "1.2k" depending on size
+        if context_used_k < 1:
+            used_str = f"{context_used_k:.1f}k"
+        else:
+            used_str = f"{int(context_used_k)}k"
+
+        if context_max_k >= 1000:
+            max_str = f"{int(context_max_k)}k"
+        else:
+            max_str = f"{int(context_max_k)}k"
+
+        return f"[{provider}] {model}: {used_str} / {max_str}"
+
+    def _print_status(self) -> None:
+        """Print status bar right-aligned."""
+        status = self._get_model_status()
+        self.console.print(status, style="dim", justify="right")
 
     async def _get_agent(self) -> Any:
         """Lazily initialize and return the agent."""
@@ -217,7 +266,7 @@ class UltrathinkUI:
             border_style="cyan",
             padding=(1, 2),
         ))
-        self.console.print()
+        self._print_status()
 
     async def _main_loop(self) -> None:
         """Main interaction loop."""
@@ -261,14 +310,9 @@ class UltrathinkUI:
             User input string or None if cancelled
         """
         try:
-            # Run prompt in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(
-                None,
-                lambda: self._prompt_session.prompt(
-                    [("class:prompt", "> ")],
-                    style=PROMPT_STYLE,
-                )
+            return await self._prompt_session.prompt_async(
+                [("class:prompt", "> ")],
+                style=PROMPT_STYLE,
             )
         except (KeyboardInterrupt, EOFError):
             raise
@@ -351,6 +395,14 @@ class UltrathinkUI:
                 # Add to session
                 self.session.add_message("assistant", final_content)
 
+            # Update context token count (rough estimate: ~4 chars per token)
+            self._context_tokens = sum(
+                len(m.content) // 4 for m in self.session.messages
+            )
+
+            # Print status bar
+            self._print_status()
+
         except Exception as e:
             spinner.stop()
             render_error(self.console, e)
@@ -385,6 +437,8 @@ class UltrathinkUI:
             self._compact_history()
         elif cmd_name == "models":
             self._handle_models_command(cmd_arg)
+        elif cmd_name == "agents":
+            self._show_agents(cmd_arg)
         else:
             self.console.print(f"[red]Unknown command: /{cmd_name}[/red]")
             self.console.print("[dim]Type /help for available commands[/dim]")
@@ -399,6 +453,7 @@ class UltrathinkUI:
 [cyan]/stats[/cyan]     Show session statistics
 [cyan]/compact[/cyan]   Compact conversation history
 [cyan]/models[/cyan]    Manage model profiles and aliases
+[cyan]/agents[/cyan]    List available subagents
 [cyan]/exit[/cyan]      Exit Ultrathink
 
 [bold cyan]Tips[/bold cyan]
@@ -412,6 +467,7 @@ class UltrathinkUI:
         """Clear the conversation history."""
         self.session.clear()
         self._agent = None  # Reset agent to clear its context
+        self._context_tokens = 0  # Reset context token count
         self.console.print("[green]Conversation cleared.[/green]")
 
     def _show_history(self) -> None:
@@ -451,9 +507,72 @@ class UltrathinkUI:
         # For now, just truncate to last 10 messages
         if len(self.session.messages) > 10:
             self.session.messages = self.session.messages[-10:]
+            # Update context token count
+            self._context_tokens = sum(
+                len(m.content) // 4 for m in self.session.messages
+            )
             self.console.print("[green]History compacted to last 10 messages.[/green]")
         else:
             self.console.print("[dim]History is already compact.[/dim]")
+
+    def _show_agents(self, arg: str = "") -> None:
+        """Show available subagents."""
+        from rich.table import Table
+        from rich.text import Text
+        from ultrathink.subagents.loader import load_all_subagents
+        from ultrathink.subagents.definitions import AgentLocation
+
+        agents = load_all_subagents(project_path=self.cwd)
+
+        if not agents:
+            self.console.print("[yellow]No agents found.[/yellow]")
+            return
+
+        # Show specific agent details if name provided
+        if arg:
+            agent_name = arg.strip().lower()
+            for agent in agents:
+                if agent.name.lower() == agent_name:
+                    self.console.print(f"\n[bold cyan]Agent: {agent.name}[/bold cyan]")
+                    self.console.print(f"[dim]Location:[/dim] {agent.location.value}")
+                    self.console.print(f"[dim]Description:[/dim] {agent.description}")
+                    if agent.tools:
+                        self.console.print(f"[dim]Tools:[/dim] {', '.join(agent.tools)}")
+                    if agent.model:
+                        self.console.print(f"[dim]Model:[/dim] {agent.model}")
+                    self.console.print("\n[dim]System Prompt:[/dim]")
+                    self.console.print(agent.system_prompt)
+                    return
+            self.console.print(f"[red]Agent '{arg}' not found.[/red]")
+            return
+
+        # Location color mapping
+        location_colors = {
+            AgentLocation.BUILTIN: "blue",
+            AgentLocation.USER: "green",
+            AgentLocation.PROJECT: "yellow",
+        }
+
+        table = Table(title="Available Agents", show_header=True)
+        table.add_column("Name", style="cyan")
+        table.add_column("Location", style="dim")
+        table.add_column("Description", style="white", max_width=50)
+        table.add_column("Tools", style="dim", max_width=30)
+
+        for agent in agents:
+            location_text = Text(agent.location.value, style=location_colors.get(agent.location, "white"))
+            tools_str = ", ".join(agent.tools[:3])
+            if len(agent.tools) > 3:
+                tools_str += f" (+{len(agent.tools) - 3})"
+            table.add_row(
+                agent.name,
+                location_text,
+                agent.description[:50] + "..." if len(agent.description) > 50 else agent.description,
+                tools_str,
+            )
+
+        self.console.print(table)
+        self.console.print("\n[dim]Use /agents <name> to see details for a specific agent.[/dim]")
 
     def _handle_models_command(self, args: str) -> None:
         """Handle the /models command for managing model profiles and aliases.

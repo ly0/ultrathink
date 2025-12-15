@@ -59,6 +59,10 @@ Supported providers: `deepseek`, `anthropic`, `openai`, `gemini`
 | `explore` | Fast codebase exploration and file search |
 | `research` | Deep research with comprehensive analysis |
 | `code-review` | Code review and quality analysis |
+| `refactor` | Code restructuring and architecture improvements |
+| `test` | Writing and analyzing tests |
+
+Use `/agents` command to see all available agents including custom ones.
 
 ## Installation
 
@@ -115,6 +119,7 @@ In interactive mode:
 | `/help` | Show available commands |
 | `/clear` | Clear conversation history |
 | `/models` | Manage model profiles and aliases |
+| `/agents` | List available subagents |
 | `/history` | Show conversation history |
 | `/stats` | Show session statistics |
 | `/compact` | Compact conversation history |

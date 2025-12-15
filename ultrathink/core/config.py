@@ -46,9 +46,9 @@ class ModelProfile(BaseModel):
     model: str = "claude-sonnet-4-20250514"
     api_key: Optional[str] = None
     api_base: Optional[str] = None
-    max_tokens: int = 16384
+    max_tokens: int = 8192
     temperature: float = 0.7
-    context_window: Optional[int] = None
+    context_length: int = 131072
     # Pricing (USD per 1M tokens)
     input_cost_per_million_tokens: float = 0.0
     output_cost_per_million_tokens: float = 0.0
