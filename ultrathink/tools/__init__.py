@@ -35,8 +35,8 @@ def get_custom_tools(
     working_dir = cwd or Path.cwd()
 
     # Add ask_user tool if we have a UI callback
-    if ui_callback is not None:
-        tools.append(create_ask_user_tool(ui_callback))
+    #if ui_callback is not None:
+    #    tools.append(create_ask_user_tool(ui_callback))
 
     # Add ask_user_multi tool if we have a multi UI callback
     if ui_multi_callback is not None:
