@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -27,6 +27,7 @@ from ultrathink.core.config import (
     is_auto_compact_enabled,
 )
 from ultrathink.core.session import ConversationSession
+from ultrathink.core.token_estimation import estimate_tokens
 from ultrathink.cli.ui.message_renderer import render_message, render_tool_use, render_error
 from ultrathink.cli.ui.thinking_spinner import ThinkingSpinner
 from ultrathink.models.deepseek_reasoner import REASONING_CONTENT_KEY
@@ -300,31 +301,31 @@ class UltrathinkUI:
             self.session.set_summary(summary)
             self.session.messages = recent_messages
 
-            # Update context tokens (rough estimate: 4 chars per token)
-            self._context_tokens = sum(len(m.content) // 4 for m in self.session.messages)
-            self._context_tokens += len(summary) // 4
+            # Update context tokens
+            self._context_tokens = sum(estimate_tokens(m.content) for m in self.session.messages)
+            self._context_tokens += estimate_tokens(summary)
 
             # Show notification panel
-            self._show_compact_notification(messages_count, len(summary))
+            self._show_compact_notification(messages_count, estimate_tokens(summary))
 
         except Exception as e:
             # Fallback to simple truncation if summarization fails
             self.console.print(f"[yellow]Summarization failed, falling back to truncation: {e}[/yellow]")
             self.session.messages = recent_messages
-            self._context_tokens = sum(len(m.content) // 4 for m in self.session.messages)
+            self._context_tokens = sum(estimate_tokens(m.content) for m in self.session.messages)
             self.console.print(f"[green]Truncated to last {keep_recent} messages.[/green]")
 
-    def _show_compact_notification(self, messages_summarized: int, summary_length: int) -> None:
+    def _show_compact_notification(self, messages_summarized: int, summary_tokens: int) -> None:
         """Show panel notification about auto-compaction.
 
         Args:
             messages_summarized: Number of messages that were summarized.
-            summary_length: Length of the generated summary in characters.
+            summary_tokens: Estimated token count of the summary.
         """
         notification = Text()
         notification.append("Context auto-compacted\n", style="bold yellow")
         notification.append(f"Summarized {messages_summarized} messages into ", style="dim")
-        notification.append(f"~{summary_length // 4} tokens\n", style="dim")
+        notification.append(f"~{summary_tokens} tokens\n", style="dim")
         notification.append("Kept last 4 messages intact.", style="dim")
 
         self.console.print()
@@ -542,13 +543,12 @@ class UltrathinkUI:
                 # Add to session
                 self.session.add_message("assistant", final_content)
 
-            # Update context token count (rough estimate: ~4 chars per token)
+            # Update context token count
             self._context_tokens = sum(
-                len(m.content) // 4 for m in self.session.messages
+                estimate_tokens(m.content) for m in self.session.messages
             )
-            # Include summary in token count if exists
             if self.session.summary:
-                self._context_tokens += len(self.session.summary) // 4
+                self._context_tokens += estimate_tokens(self.session.summary)
 
             # Print status bar
             self._print_status()
@@ -663,7 +663,7 @@ class UltrathinkUI:
             self.session.messages = self.session.messages[-10:]
             # Update context token count
             self._context_tokens = sum(
-                len(m.content) // 4 for m in self.session.messages
+                estimate_tokens(m.content) for m in self.session.messages
             )
             self.console.print("[green]History compacted to last 10 messages.[/green]")
         else:
