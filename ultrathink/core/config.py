@@ -142,6 +142,10 @@ class GlobalConfig(BaseModel):
     verbose: bool = False
     safe_mode: bool = True
 
+    # Auto-compaction settings
+    auto_compact_enabled: bool = True
+    auto_compact_threshold: float = 0.92  # 92% of context length
+
     # Onboarding
     has_completed_onboarding: bool = False
 
@@ -613,6 +617,34 @@ def list_profiles() -> Dict[str, ModelProfile]:
 def list_aliases() -> Dict[str, str]:
     """List all aliases (builtin + custom)."""
     return config_manager.list_aliases()
+
+
+def get_auto_compact_threshold() -> float:
+    """Get auto-compaction threshold from env or config.
+
+    Returns:
+        Float between 0.0 and 1.0 representing the context usage ratio
+        at which auto-compaction should trigger.
+    """
+    env_val = os.environ.get("ULTRATHINK_AUTO_COMPACT_THRESHOLD")
+    if env_val:
+        try:
+            return float(env_val)
+        except ValueError:
+            pass
+    return config_manager.get_global_config().auto_compact_threshold
+
+
+def is_auto_compact_enabled() -> bool:
+    """Check if auto-compaction is enabled.
+
+    Returns:
+        True if auto-compaction is enabled, False otherwise.
+    """
+    env_val = os.environ.get("ULTRATHINK_AUTO_COMPACT_ENABLED")
+    if env_val is not None:
+        return env_val.lower() in ("true", "1", "yes")
+    return config_manager.get_global_config().auto_compact_enabled
 
 
 def ensure_onboarding() -> bool:

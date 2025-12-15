@@ -19,7 +19,13 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ultrathink import __version__
-from ultrathink.core.config import ModelProfile, get_model_profile, get_model_string
+from ultrathink.core.config import (
+    ModelProfile,
+    get_auto_compact_threshold,
+    get_model_profile,
+    get_model_string,
+    is_auto_compact_enabled,
+)
 from ultrathink.core.session import ConversationSession
 from ultrathink.cli.ui.message_renderer import render_message, render_tool_use, render_error
 from ultrathink.cli.ui.thinking_spinner import ThinkingSpinner
@@ -229,6 +235,105 @@ class UltrathinkUI:
         status = self._get_model_status()
         self.console.print(status, style="dim", justify="right")
 
+    def _should_auto_compact(self) -> bool:
+        """Check if auto-compaction should be triggered.
+
+        Returns:
+            True if context usage exceeds threshold and auto-compact is enabled.
+        """
+        if not is_auto_compact_enabled():
+            return False
+
+        profile = get_model_profile("main")
+        context_length = profile.context_length if profile else 131072
+        threshold = get_auto_compact_threshold()
+
+        usage_ratio = self._context_tokens / context_length
+        return usage_ratio >= threshold
+
+    async def _auto_compact_with_summary(self) -> None:
+        """Auto-compact conversation by summarizing old messages."""
+        from ultrathink.core.agent_factory import init_model
+
+        # Keep last 4 messages (2 user-assistant exchanges) intact
+        keep_recent = 4
+        if len(self.session.messages) <= keep_recent:
+            self.console.print("[dim]Not enough messages to compact.[/dim]")
+            return
+
+        # Split messages
+        to_summarize = self.session.messages[:-keep_recent]
+        recent_messages = self.session.messages[-keep_recent:]
+        messages_count = len(to_summarize)
+
+        # Build summarization prompt
+        conversation_text = "\n\n".join([
+            f"[{m.role.upper()}]: {m.content}" for m in to_summarize
+        ])
+
+        # Combine with existing summary if present
+        if self.session.summary:
+            conversation_text = f"[PREVIOUS SUMMARY]:\n{self.session.summary}\n\n[NEW MESSAGES]:\n{conversation_text}"
+
+        # Use quick model for summarization (or main if quick not configured)
+        quick_profile = get_model_profile("quick")
+        if quick_profile is None:
+            quick_profile = get_model_profile("main")
+
+        try:
+            quick_model = init_model(profile=quick_profile)
+
+            # Get summary
+            from langchain_core.messages import SystemMessage, HumanMessage
+            response = await quick_model.ainvoke([
+                SystemMessage(content=(
+                    "You are a conversation summarizer. Summarize the following conversation "
+                    "concisely, preserving key information, decisions made, code discussed, "
+                    "and any important context. Focus on technical details and outcomes. "
+                    "Keep the summary under 500 words."
+                )),
+                HumanMessage(content=f"Summarize this conversation:\n\n{conversation_text}")
+            ])
+            summary = response.content
+
+            # Update session
+            self.session.set_summary(summary)
+            self.session.messages = recent_messages
+
+            # Update context tokens (rough estimate: 4 chars per token)
+            self._context_tokens = sum(len(m.content) // 4 for m in self.session.messages)
+            self._context_tokens += len(summary) // 4
+
+            # Show notification panel
+            self._show_compact_notification(messages_count, len(summary))
+
+        except Exception as e:
+            # Fallback to simple truncation if summarization fails
+            self.console.print(f"[yellow]Summarization failed, falling back to truncation: {e}[/yellow]")
+            self.session.messages = recent_messages
+            self._context_tokens = sum(len(m.content) // 4 for m in self.session.messages)
+            self.console.print(f"[green]Truncated to last {keep_recent} messages.[/green]")
+
+    def _show_compact_notification(self, messages_summarized: int, summary_length: int) -> None:
+        """Show panel notification about auto-compaction.
+
+        Args:
+            messages_summarized: Number of messages that were summarized.
+            summary_length: Length of the generated summary in characters.
+        """
+        notification = Text()
+        notification.append("Context auto-compacted\n", style="bold yellow")
+        notification.append(f"Summarized {messages_summarized} messages into ", style="dim")
+        notification.append(f"~{summary_length // 4} tokens\n", style="dim")
+        notification.append("Kept last 4 messages intact.", style="dim")
+
+        self.console.print()
+        self.console.print(Panel(
+            notification,
+            title="[yellow]Auto-Compaction[/yellow]",
+            border_style="yellow",
+        ))
+
     async def _get_agent(self) -> Any:
         """Lazily initialize and return the agent."""
         if self._agent is None:
@@ -336,8 +441,8 @@ class UltrathinkUI:
         try:
             spinner.start()
 
-            # Prepare messages for agent
-            messages = [{"role": m.role, "content": m.content} for m in self.session.messages]
+            # Prepare messages for agent (include summary if exists)
+            messages = self.session.get_messages_with_summary()
 
             # Stream the response
             output_tokens = 0
@@ -436,9 +541,16 @@ class UltrathinkUI:
             self._context_tokens = sum(
                 len(m.content) // 4 for m in self.session.messages
             )
+            # Include summary in token count if exists
+            if self.session.summary:
+                self._context_tokens += len(self.session.summary) // 4
 
             # Print status bar
             self._print_status()
+
+            # Check if auto-compaction needed
+            if self._should_auto_compact():
+                await self._auto_compact_with_summary()
 
         except Exception as e:
             spinner.stop()

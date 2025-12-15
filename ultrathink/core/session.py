@@ -67,6 +67,7 @@ class ConversationSession:
         self.tool_calls: List[ToolCall] = []
         self.stats = SessionStats()
         self._context: Dict[str, Any] = {}
+        self.summary: Optional[str] = None  # Summarized conversation history
 
     def add_message(
         self,
@@ -132,6 +133,37 @@ class ConversationSession:
         """Get messages as list of dicts."""
         return [msg.to_dict() for msg in self.messages]
 
+    def set_summary(self, summary: str) -> None:
+        """Set the summarized conversation context.
+
+        Args:
+            summary: The summarized content of previous conversation.
+        """
+        self.summary = summary
+
+    def clear_summary(self) -> None:
+        """Clear the summarized conversation context."""
+        self.summary = None
+
+    def get_messages_with_summary(self) -> List[Dict[str, str]]:
+        """Get messages with summary prepended as system context.
+
+        If a summary exists from previous compaction, it will be prepended
+        as a system message to provide context to the model.
+
+        Returns:
+            List of message dictionaries with summary prepended if exists.
+        """
+        messages = []
+        if self.summary:
+            messages.append({
+                "role": "system",
+                "content": f"[Previous conversation summary]\n{self.summary}"
+            })
+        for m in self.messages:
+            messages.append({"role": m.role, "content": m.content})
+        return messages
+
     def get_last_user_message(self) -> Optional[Message]:
         """Get the most recent user message."""
         for msg in reversed(self.messages):
@@ -147,10 +179,11 @@ class ConversationSession:
         return None
 
     def clear(self) -> None:
-        """Clear all messages and tool calls."""
+        """Clear all messages, tool calls, and summary."""
         self.messages.clear()
         self.tool_calls.clear()
         self.stats = SessionStats()
+        self.summary = None
 
     def set_context(self, key: str, value: Any) -> None:
         """Set a context value."""
