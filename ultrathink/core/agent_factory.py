@@ -173,6 +173,8 @@ async def create_ultrathink_agent(
     cwd: Optional[Path] = None,
     mcp_config: Optional[Dict[str, Any]] = None,
     base_url: Optional[str] = None,
+    ui_callback: Optional[Callable] = None,
+    ui_multi_callback: Optional[Callable] = None,
     **kwargs: Any,
 ) -> Any:
     """Create a configured Ultrathink agent.
@@ -189,6 +191,8 @@ async def create_ultrathink_agent(
         cwd: Current working directory
         mcp_config: MCP server configuration
         base_url: Custom API base URL
+        ui_callback: Callback function for user interaction (for ask_user tool)
+        ui_multi_callback: Callback function for multi-question interaction (for ask_user_multi tool)
         **kwargs: Additional arguments passed to create_deep_agent
 
     Returns:
@@ -224,6 +228,8 @@ async def create_ultrathink_agent(
     custom_tools = get_custom_tools(
         safe_mode=safe_mode,
         cwd=working_dir,
+        ui_callback=ui_callback,
+        ui_multi_callback=ui_multi_callback,
     )
     all_tools.extend(custom_tools)
 

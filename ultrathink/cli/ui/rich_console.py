@@ -346,6 +346,8 @@ class UltrathinkUI:
                 session=self.session,
                 cwd=self.cwd,
                 base_url=self.base_url,
+                ui_callback=self.ask_user,
+                ui_multi_callback=self.ask_user_multi,
             )
         return self._agent
 
@@ -485,7 +487,10 @@ class UltrathinkUI:
                     tool_name = event.get("name", "unknown")
                     tool_input = event.get("data", {}).get("input", {})
                     render_tool_use(self.console, tool_name, tool_input, "call")
-                    spinner.start()
+                    # Don't restart spinner for interactive tools
+                    # They need the terminal for user input
+                    if tool_name not in ("ask_user", "ask_user_multi"):
+                        spinner.start()
 
                 elif event_type == "on_tool_end":
                     # Show tool result
@@ -1067,6 +1072,9 @@ class UltrathinkUI:
     def ask_user(self, question: str, options: List[str], context: str) -> str:
         """Callback for the ask_user tool.
 
+        This method is called from a thread pool executor, so we use a simple
+        input() instead of prompt_toolkit which doesn't work well in threads.
+
         Args:
             question: Question to ask
             options: Available options
@@ -1075,24 +1083,26 @@ class UltrathinkUI:
         Returns:
             User's response
         """
-        self.console.print()
+        import sys
+
+        # Use print directly instead of rich console to avoid threading issues
+        print()  # newline
 
         if context:
-            self.console.print(f"[dim]{context}[/dim]")
+            print(f"  {context}")
 
-        self.console.print(f"[bold cyan]Question:[/bold cyan] {question}")
+        print(f"  \033[1;36mQuestion:\033[0m {question}")
 
         if options:
-            self.console.print("[dim]Options:[/dim]")
+            print("  Options:")
             for i, opt in enumerate(options, 1):
-                self.console.print(f"  [cyan]{i}.[/cyan] {opt}")
-            self.console.print("[dim]Enter a number or type your own response:[/dim]")
+                print(f"    \033[36m{i}.\033[0m {opt}")
+            print("  Enter a number or type your own response:")
 
         try:
-            response = self._prompt_session.prompt(
-                [("class:prompt", "? ")],
-                style=PROMPT_STYLE,
-            )
+            # Flush stdout before reading input
+            sys.stdout.flush()
+            response = input("  ? ")
 
             # Check if it's a number selecting an option
             if options and response.isdigit():
@@ -1103,4 +1113,87 @@ class UltrathinkUI:
             return response
 
         except (KeyboardInterrupt, EOFError):
+            print()
             return ""
+
+    def ask_user_multi(
+        self,
+        questions: List[Dict[str, Any]],
+        context: str,
+        title: str,
+    ) -> Dict[str, Any]:
+        """Callback for the ask_user_multi tool.
+
+        This method runs in a thread pool executor and creates its own
+        event loop for the prompt_toolkit Application.
+
+        Args:
+            questions: List of question dictionaries
+            context: Context text
+            title: Dialog title
+
+        Returns:
+            Dictionary with answers, confirmed, and cancelled status
+        """
+        print()  # newline for visual separation
+
+        try:
+            from ultrathink.cli.ui.tab_questions import run_tab_questions
+
+            return run_tab_questions(questions, context, title)
+        except Exception as e:
+            # Fallback to sequential input() if prompt_toolkit fails
+            print(f"  [Warning: Tab UI unavailable, using fallback: {e}]")
+            return self._fallback_multi_questions(questions, context, title)
+
+    def _fallback_multi_questions(
+        self,
+        questions: List[Dict[str, Any]],
+        context: str,
+        title: str,
+    ) -> Dict[str, Any]:
+        """Fallback for multi-question UI using simple input().
+
+        Used when prompt_toolkit is not available or fails.
+        """
+        import sys
+
+        print(f"\n  === {title} ===")
+        if context:
+            print(f"  {context}\n")
+
+        answers = {}
+        for q in questions:
+            print(f"\n  Question: {q['question']}")
+            if q.get("options"):
+                for i, opt in enumerate(q["options"], 1):
+                    print(f"    {i}. {opt}")
+
+            try:
+                sys.stdout.flush()
+                response = input("  > ")
+
+                # Resolve option numbers
+                if q.get("options") and response.isdigit():
+                    idx = int(response) - 1
+                    if 0 <= idx < len(q["options"]):
+                        response = q["options"][idx]
+
+                answers[q["id"]] = response or q.get("default", "")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return {"answers": {}, "confirmed": False, "cancelled": True}
+
+        # Simple confirmation
+        print("\n  Review your answers:")
+        for q in questions:
+            print(f"    {q['question']}: {answers.get(q['id'], '(empty)')}")
+
+        try:
+            confirm = input("\n  Confirm? [Y/n] ").strip().lower()
+            confirmed = confirm in ("", "y", "yes")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return {"answers": answers, "confirmed": False, "cancelled": True}
+
+        return {"answers": answers, "confirmed": confirmed, "cancelled": False}
