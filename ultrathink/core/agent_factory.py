@@ -312,13 +312,15 @@ async def _create_langgraph_agent(
     )
 
     # Return a wrapper that sets higher recursion limit
-    return _AgentWithConfig(agent, recursion_limit=100)
+    # Set a very high recursion limit - effectively unlimited for practical purposes
+    # Each "recursion" is roughly one model call + tool execution
+    return _AgentWithConfig(agent, recursion_limit=10000)
 
 
 class _AgentWithConfig:
     """Wrapper for agent that applies default config."""
 
-    def __init__(self, agent: Any, recursion_limit: int = 100):
+    def __init__(self, agent: Any, recursion_limit: int = 10000):
         self._agent = agent
         self._config = {"recursion_limit": recursion_limit}
 
