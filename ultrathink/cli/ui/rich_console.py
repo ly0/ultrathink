@@ -23,6 +23,7 @@ from ultrathink.core.config import ModelProfile, get_model_profile, get_model_st
 from ultrathink.core.session import ConversationSession
 from ultrathink.cli.ui.message_renderer import render_message, render_tool_use, render_error
 from ultrathink.cli.ui.thinking_spinner import ThinkingSpinner
+from ultrathink.models.deepseek_reasoner import REASONING_CONTENT_KEY
 
 
 # Prompt toolkit style
@@ -341,6 +342,7 @@ class UltrathinkUI:
             # Stream the response
             output_tokens = 0
             final_content = ""
+            thinking_content = ""
 
             async for event in agent.astream_events(
                 {"messages": messages},
@@ -351,13 +353,30 @@ class UltrathinkUI:
                 if event_type == "on_chat_model_stream":
                     # Update token count
                     chunk = event.get("data", {}).get("chunk")
-                    if chunk and hasattr(chunk, "content") and chunk.content:
-                        output_tokens += 1
-                        spinner.update_tokens(output_tokens)
+                    if chunk:
+                        # Accumulate reasoning chunks
+                        if hasattr(chunk, "additional_kwargs"):
+                            reasoning_chunk = chunk.additional_kwargs.get("reasoning_chunk", "")
+                            if reasoning_chunk:
+                                thinking_content += reasoning_chunk
+                        # Count output tokens
+                        if hasattr(chunk, "content") and chunk.content:
+                            output_tokens += 1
+                            spinner.update_tokens(output_tokens)
 
                 elif event_type == "on_tool_start":
-                    # Show tool call
+                    # Show accumulated thinking before tool call
                     spinner.stop()
+                    if thinking_content:
+                        self.console.print()
+                        self.console.print(Panel(
+                            Text(thinking_content, style="dim italic"),
+                            title="[dim]Thinking[/dim]",
+                            border_style="dim",
+                        ))
+                        thinking_content = ""  # Reset for next round
+
+                    # Show tool call
                     tool_name = event.get("name", "unknown")
                     tool_input = event.get("data", {}).get("input", {})
                     render_tool_use(self.console, tool_name, tool_input, "call")
@@ -377,10 +396,28 @@ class UltrathinkUI:
                     output = event.get("data", {}).get("output", {})
                     if "messages" in output and output["messages"]:
                         final_message = output["messages"][-1]
-                        if hasattr(final_message, "content"):
+                        # Only update if content is non-empty (avoid overwriting with empty)
+                        if hasattr(final_message, "content") and final_message.content:
                             final_content = final_message.content
+                        # Also check additional_kwargs as fallback for non-streaming
+                        if not thinking_content and hasattr(final_message, "additional_kwargs"):
+                            # Check both possible keys
+                            thinking_content = final_message.additional_kwargs.get(
+                                REASONING_CONTENT_KEY, ""
+                            ) or final_message.additional_kwargs.get(
+                                "reasoning_chunk", ""
+                            )
 
             spinner.stop()
+
+            # Display thinking content if available
+            if thinking_content:
+                self.console.print()
+                self.console.print(Panel(
+                    Text(thinking_content, style="dim italic"),
+                    title="[dim]Thinking[/dim]",
+                    border_style="dim",
+                ))
 
             # Display final response
             if final_content:
