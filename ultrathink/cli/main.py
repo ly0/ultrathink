@@ -119,8 +119,14 @@ async def _run_single_query(
 
     from ultrathink.core.agent_factory import create_ultrathink_agent
     from ultrathink.cli.ui.message_renderer import render_message, render_error
+    from ultrathink.mcp.config_loader import load_mcp_config
 
     console = Console()
+
+    # Load MCP configuration
+    mcp_config = load_mcp_config(Path.cwd())
+    if mcp_config and verbose:
+        console.print(f"[dim]MCP: Found {len(mcp_config)} server(s)[/dim]")
 
     try:
         agent = await create_ultrathink_agent(
@@ -128,6 +134,7 @@ async def _run_single_query(
             safe_mode=safe_mode,
             verbose=verbose,
             base_url=base_url,
+            mcp_config=mcp_config,
         )
 
         # Run the query

@@ -233,6 +233,20 @@ async def create_ultrathink_agent(
     )
     all_tools.extend(custom_tools)
 
+    # Load MCP tools if configured (for all agent types)
+    if mcp_config:
+        try:
+            from ultrathink.mcp.runtime import get_mcp_runtime
+
+            mcp_runtime = await get_mcp_runtime(working_dir)
+            if mcp_runtime.tools:
+                all_tools.extend(mcp_runtime.tools)
+                if verbose:
+                    print(f"MCP: Loaded {len(mcp_runtime.tools)} tool(s)")
+        except Exception as e:
+            if verbose:
+                print(f"Warning: Failed to load MCP tools: {e}")
+
     # Check if we're using DeepSeek Reasoner
     is_deepseek_reasoner = False
     if hasattr(llm, "_llm_type"):
@@ -261,20 +275,9 @@ async def create_ultrathink_agent(
         ) from e
 
     # Build middleware list
+    # Note: MCP tools are loaded directly into all_tools above,
+    # so we don't need MCP middleware here
     all_middleware = list(middleware) if middleware else []
-
-    # Add MCP middleware if configured
-    if mcp_config:
-        try:
-            from ultrathink.middleware.mcp_integration import MCPMiddleware
-
-            mcp_middleware = MCPMiddleware(
-                project_path=working_dir,
-                config=mcp_config,
-            )
-            all_middleware.append(mcp_middleware)
-        except ImportError:
-            pass  # MCP not available
 
     # Create the agent
     agent = create_deep_agent(

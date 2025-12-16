@@ -48,6 +48,83 @@ class MCPRuntime:
             return get_mcp_server_names(self.config)
         return []
 
+    def _get_tool_server(self, tool: BaseTool, server_names: List[str]) -> str:
+        """Determine which server a tool belongs to.
+
+        Args:
+            tool: The LangChain tool
+            server_names: List of configured server names
+
+        Returns:
+            Server name for the tool
+        """
+        # Check if tool has metadata with server info
+        if hasattr(tool, "metadata") and isinstance(tool.metadata, dict):
+            if "server" in tool.metadata:
+                return tool.metadata["server"]
+            if "server_name" in tool.metadata:
+                return tool.metadata["server_name"]
+
+        # Check description for server hints (e.g., "[MCP: server_name]")
+        if tool.description and "[MCP:" in tool.description:
+            import re
+            match = re.search(r'\[MCP:\s*([^\]]+)\]', tool.description)
+            if match:
+                return match.group(1).strip()
+
+        # If only one server configured, use that
+        if len(server_names) == 1:
+            return server_names[0]
+
+        # Default fallback
+        return "mcp"
+
+    def _prefix_tool(self, tool: BaseTool, server_name: str) -> BaseTool:
+        """Create a copy of a tool with prefixed name.
+
+        Args:
+            tool: Original LangChain tool
+            server_name: Server name for prefix
+
+        Returns:
+            Tool with prefixed name
+        """
+        from langchain_core.tools import StructuredTool
+
+        # Create new name with prefix
+        new_name = f"mcp__{server_name}__{tool.name}"
+
+        # Update description to include server info if not already present
+        description = tool.description
+        if not description.startswith("[MCP:"):
+            description = f"[MCP: {server_name}] {description}"
+
+        # Create a wrapper that calls the original tool
+        if hasattr(tool, "coroutine") and tool.coroutine:
+            async def async_wrapper(**kwargs):
+                return await tool.ainvoke(kwargs)
+
+            def sync_wrapper(**kwargs):
+                return tool.invoke(kwargs)
+
+            return StructuredTool.from_function(
+                name=new_name,
+                description=description,
+                func=sync_wrapper,
+                coroutine=async_wrapper,
+                args_schema=tool.args_schema if hasattr(tool, "args_schema") else None,
+            )
+        else:
+            def wrapper(**kwargs):
+                return tool.invoke(kwargs)
+
+            return StructuredTool.from_function(
+                name=new_name,
+                description=description,
+                func=wrapper,
+                args_schema=tool.args_schema if hasattr(tool, "args_schema") else None,
+            )
+
     async def initialize(self) -> None:
         """Initialize MCP client and load tools."""
         if self._initialized:
@@ -61,21 +138,40 @@ class MCPRuntime:
         try:
             from langchain_mcp_adapters.client import MultiServerMCPClient
 
+            # Create client and get tools (new API - no context manager)
             self._client = MultiServerMCPClient(config)
-            await self._client.__aenter__()
 
             # Get tools from all servers
+            # The new API returns LangChain tools directly
             mcp_tools = await self._client.get_tools()
 
-            # Convert to LangChain tools
-            for tool_info in mcp_tools:
-                server_name = tool_info.get("server", "unknown")
-                lc_tool = create_mcp_tool(
-                    tool_info,
-                    self._call_tool,
-                    server_name,
-                )
-                self._tools.append(lc_tool)
+            # Get server names from config for prefixing
+            server_names = list(config.keys())
+
+            # Process tools and ensure proper naming with server prefix
+            for tool in mcp_tools:
+                if isinstance(tool, BaseTool):
+                    # Check if tool already has mcp__ prefix
+                    if not tool.name.startswith("mcp__"):
+                        # Add server prefix - try to determine server from tool metadata
+                        # or use first server if only one configured
+                        server_name = self._get_tool_server(tool, server_names)
+                        prefixed_tool = self._prefix_tool(tool, server_name)
+                        self._tools.append(prefixed_tool)
+                    else:
+                        self._tools.append(tool)
+                elif isinstance(tool, dict):
+                    # Need to convert from dict format
+                    server_name = tool.get("server", server_names[0] if server_names else "unknown")
+                    lc_tool = create_mcp_tool(
+                        tool,
+                        self._call_tool,
+                        server_name,
+                    )
+                    self._tools.append(lc_tool)
+                else:
+                    # Assume it's a tool-like object, add directly
+                    self._tools.append(tool)
 
             self._initialized = True
 
@@ -117,7 +213,11 @@ class MCPRuntime:
         """Clean up MCP client and connections."""
         if self._client:
             try:
-                await self._client.__aexit__(None, None, None)
+                # Try to close the client if it has a close method
+                if hasattr(self._client, "close"):
+                    await self._client.close()
+                elif hasattr(self._client, "aclose"):
+                    await self._client.aclose()
             except Exception:
                 pass
             self._client = None

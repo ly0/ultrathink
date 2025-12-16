@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -50,6 +50,7 @@ SLASH_COMMANDS = {
     "/compact": "Compact conversation history",
     "/models": "Manage model profiles and aliases",
     "/agents": "List available subagents",
+    "/mcp": "Show MCP server status",
     "/exit": "Exit Ultrathink",
     "/quit": "Exit Ultrathink",
 }
@@ -177,6 +178,7 @@ class UltrathinkUI:
         self._agent = None
         self._should_exit = False
         self._context_tokens = 0  # Track current context token usage
+        self._mcp_config: Optional[Dict[str, Any]] = None  # MCP server configuration
 
         # Set up prompt history
         history_path = Path.home() / ".ultrathink_history"
@@ -349,13 +351,24 @@ class UltrathinkUI:
                 base_url=self.base_url,
                 ui_callback=self.ask_user,
                 ui_multi_callback=self.ask_user_multi,
+                mcp_config=self._mcp_config,
             )
         return self._agent
 
     def run(self) -> None:
         """Start the interactive loop."""
         self._display_welcome()
+        self._init_mcp_sync()  # Load MCP configuration
         asyncio.run(self._main_loop())
+
+    def _init_mcp_sync(self) -> None:
+        """Initialize MCP configuration (synchronous, config loading only)."""
+        from ultrathink.mcp.config_loader import load_mcp_config
+
+        self._mcp_config = load_mcp_config(self.cwd)
+        if self._mcp_config:
+            server_count = len(self._mcp_config)
+            self.console.print(f"[dim]MCP: Found {server_count} server(s) configured[/dim]")
 
     def _display_welcome(self) -> None:
         """Display the welcome banner."""
@@ -379,38 +392,67 @@ class UltrathinkUI:
 
     async def _main_loop(self) -> None:
         """Main interaction loop."""
-        while not self._should_exit:
-            try:
-                # Get user input
-                user_input = await self._get_user_input()
+        # Eager MCP server initialization
+        if self._mcp_config:
+            await self._start_mcp_servers()
 
-                if user_input is None:
-                    continue
-
-                user_input = user_input.strip()
-                if not user_input:
-                    continue
-
-                # Handle slash commands
-                if user_input.startswith("/"):
-                    self._handle_slash_command(user_input)
-                    continue
-
-                # Process the query
-                await self._process_query(user_input)
-
-            except KeyboardInterrupt:
-                self.console.print("\n[yellow]Interrupted. Press Ctrl+C again to exit.[/yellow]")
+        try:
+            while not self._should_exit:
                 try:
-                    await asyncio.sleep(1)
+                    # Get user input
+                    user_input = await self._get_user_input()
+
+                    if user_input is None:
+                        continue
+
+                    user_input = user_input.strip()
+                    if not user_input:
+                        continue
+
+                    # Handle slash commands
+                    if user_input.startswith("/"):
+                        await self._handle_slash_command(user_input)
+                        continue
+
+                    # Process the query
+                    await self._process_query(user_input)
+
                 except KeyboardInterrupt:
+                    self.console.print("\n[yellow]Interrupted. Press Ctrl+C again to exit.[/yellow]")
+                    try:
+                        await asyncio.sleep(1)
+                    except KeyboardInterrupt:
+                        self.console.print("\n[yellow]Goodbye![/yellow]")
+                        break
+                except EOFError:
                     self.console.print("\n[yellow]Goodbye![/yellow]")
                     break
-            except EOFError:
-                self.console.print("\n[yellow]Goodbye![/yellow]")
-                break
-            except Exception as e:
-                render_error(self.console, e)
+                except Exception as e:
+                    render_error(self.console, e)
+        finally:
+            # Cleanup MCP runtime
+            await self._cleanup_mcp()
+
+    async def _start_mcp_servers(self) -> None:
+        """Start MCP servers eagerly."""
+        from ultrathink.mcp.runtime import get_mcp_runtime
+
+        try:
+            runtime = await get_mcp_runtime(self.cwd)
+            if runtime.tools:
+                self.console.print(f"[green]MCP: Loaded {len(runtime.tools)} tool(s)[/green]")
+        except Exception as e:
+            self.console.print(f"[yellow]MCP: Failed to start servers: {e}[/yellow]")
+
+    async def _cleanup_mcp(self) -> None:
+        """Clean up MCP runtime."""
+        from ultrathink.mcp.runtime import _runtime
+
+        if _runtime:
+            try:
+                await _runtime.cleanup()
+            except Exception:
+                pass  # Ignore cleanup errors
 
     async def _get_user_input(self) -> Optional[str]:
         """Get input from the user using prompt_toolkit.
@@ -563,7 +605,7 @@ class UltrathinkUI:
         finally:
             spinner.stop()
 
-    def _handle_slash_command(self, command: str) -> None:
+    async def _handle_slash_command(self, command: str) -> None:
         """Handle a slash command.
 
         Args:
@@ -593,6 +635,8 @@ class UltrathinkUI:
             self._handle_models_command(cmd_arg)
         elif cmd_name == "agents":
             self._show_agents(cmd_arg)
+        elif cmd_name == "mcp":
+            await self._show_mcp_status()
         else:
             self.console.print(f"[red]Unknown command: /{cmd_name}[/red]")
             self.console.print("[dim]Type /help for available commands[/dim]")
@@ -608,6 +652,7 @@ class UltrathinkUI:
 [cyan]/compact[/cyan]   Compact conversation history
 [cyan]/models[/cyan]    Manage model profiles and aliases
 [cyan]/agents[/cyan]    List available subagents
+[cyan]/mcp[/cyan]       Show MCP server status
 [cyan]/exit[/cyan]      Exit Ultrathink
 
 [bold cyan]Tips[/bold cyan]
@@ -727,6 +772,256 @@ class UltrathinkUI:
 
         self.console.print(table)
         self.console.print("\n[dim]Use /agents <name> to see details for a specific agent.[/dim]")
+
+    async def _show_mcp_status(self) -> None:
+        """Show interactive MCP server management interface."""
+        from ultrathink.mcp.config_loader import load_mcp_config
+        from ultrathink.mcp.runtime import _runtime
+
+        config = load_mcp_config(self.cwd)
+
+        if not config:
+            self.console.print("[yellow]No MCP configuration found.[/yellow]")
+            self.console.print("[dim]Create mcp_config.json or .ultrathink/mcp.json to configure MCP servers.[/dim]")
+            return
+
+        # Run interactive menu
+        await self._mcp_servers_menu(config, _runtime)
+
+    async def _mcp_servers_menu(self, config: Dict[str, Any], runtime: Any) -> None:
+        """Display interactive MCP servers menu with arrow key navigation.
+
+        Args:
+            config: MCP configuration dictionary
+            runtime: MCP runtime instance
+        """
+        from ultrathink.cli.ui.interactive_menu import InteractiveMenu
+
+        while True:
+            # Build menu items: (label, status, data)
+            items = []
+            for name in config.keys():
+                if runtime and runtime._initialized:
+                    status = "✓ connected"
+                else:
+                    status = "○ not started"
+                items.append((name, status, name))
+
+            menu = InteractiveMenu(
+                title="Manage MCP servers",
+                items=items,
+                subtitle=f"{len(items)} servers",
+            )
+
+            selected = await menu.run_async()
+            if selected is None:
+                break
+
+            # Show server detail
+            server_name = selected
+            server_config = config[server_name]
+            await self._mcp_server_detail_menu(server_name, server_config, runtime)
+
+    async def _mcp_server_detail_menu(
+        self,
+        server_name: str,
+        server_config: Dict[str, Any],
+        runtime: Any,
+    ) -> None:
+        """Display server detail menu with arrow key navigation.
+
+        Args:
+            server_name: Name of the server
+            server_config: Server configuration
+            runtime: MCP runtime instance
+        """
+        from ultrathink.cli.ui.interactive_menu import InteractiveMenu
+
+        while True:
+            # Build header lines for server info
+            header_lines: List[Tuple[str, str]] = []
+
+            # Status
+            if runtime and runtime._initialized:
+                header_lines.append(("class:header-status-ok", "Status: ✓ connected"))
+            else:
+                header_lines.append(("class:header-status-dim", "Status: ○ not started"))
+
+            # Command
+            cmd = server_config.get("command", "")
+            header_lines.append(("class:header-value", f"Command: {cmd}"))
+
+            # Args
+            args = server_config.get("args", [])
+            args_str = " ".join(args)
+            if args_str:
+                if len(args_str) > 55:
+                    header_lines.append(("class:header-value", f"Args: {args_str[:55]}..."))
+                else:
+                    header_lines.append(("class:header-value", f"Args: {args_str}"))
+
+            # Find config location
+            config_locations = [
+                self.cwd / "mcp_config.json",
+                self.cwd / ".ultrathink" / "mcp.json",
+                self.cwd / ".ultrathink" / "mcp_config.json",
+            ]
+            for loc in config_locations:
+                if loc.exists():
+                    header_lines.append(("class:header-value", f"Config location: {loc}"))
+                    break
+
+            header_lines.append(("class:header-value", "Capabilities: tools"))
+
+            tools_for_server = self._get_tools_for_server(server_name, runtime)
+            header_lines.append(("class:header-value", f"Tools: {len(tools_for_server)} tools"))
+
+            # Menu options
+            items = [
+                ("View tools", f"{len(tools_for_server)} available", "view_tools"),
+                ("Reconnect", "", "reconnect"),
+                ("Disable", "", "disable"),
+            ]
+
+            menu = InteractiveMenu(
+                title=f"{server_name} MCP Server",
+                items=items,
+                header_lines=header_lines,
+            )
+
+            selected = await menu.run_async()
+            if selected is None:
+                break
+
+            if selected == "view_tools":
+                await self._mcp_tools_menu(server_name, tools_for_server)
+            elif selected == "reconnect":
+                self.console.print("[yellow]Reconnect not implemented yet[/yellow]")
+                input("Press Enter to continue...")
+            elif selected == "disable":
+                self.console.print("[yellow]Disable not implemented yet[/yellow]")
+                input("Press Enter to continue...")
+
+    def _get_tools_for_server(self, server_name: str, runtime: Any) -> List[Any]:
+        """Get tools belonging to a specific server.
+
+        Args:
+            server_name: Server name
+            runtime: MCP runtime instance
+
+        Returns:
+            List of tools for the server
+        """
+        if not runtime or not runtime.tools:
+            return []
+
+        # Tools are named mcp__{server}__{tool}
+        prefix = f"mcp__{server_name}__"
+        return [t for t in runtime.tools if t.name.startswith(prefix)]
+
+    async def _mcp_tools_menu(self, server_name: str, tools: List[Any]) -> None:
+        """Display tools list with arrow key navigation.
+
+        Args:
+            server_name: Server name
+            tools: List of tools
+        """
+        from ultrathink.cli.ui.interactive_menu import InteractiveList
+
+        while True:
+            # Build items: (label, data)
+            items = []
+            for tool in tools:
+                tool_short_name = tool.name.split("__")[-1] if "__" in tool.name else tool.name
+                items.append((tool_short_name, tool))
+
+            menu = InteractiveList(
+                title=f"Tools for {server_name}",
+                items=items,
+                page_size=10,
+            )
+
+            selected = await menu.run_async()
+            if selected is None:
+                break
+
+            # Show tool detail
+            await self._mcp_tool_detail(server_name, selected)
+
+    async def _mcp_tool_detail(self, server_name: str, tool: Any) -> None:
+        """Display tool detail view.
+
+        Args:
+            server_name: Server name
+            tool: Tool object
+        """
+        from ultrathink.cli.ui.interactive_menu import DetailView
+
+        # Extract short name
+        tool_short_name = tool.name.split("__")[-1] if "__" in tool.name else tool.name
+
+        # Build content
+        content = [
+            ("Tool name", tool_short_name),
+            ("Full name", tool.name),
+            ("", ""),  # Empty line
+        ]
+
+        # Description
+        desc = tool.description
+        if desc.startswith("[MCP:"):
+            bracket_end = desc.find("]")
+            if bracket_end > 0:
+                desc = desc[bracket_end + 1:].strip()
+
+        content.append(("Description", ""))
+        # Wrap long descriptions
+        if len(desc) > 70:
+            words = desc.split()
+            line = ""
+            for word in words:
+                if len(line) + len(word) + 1 > 70:
+                    content.append(("", line))
+                    line = word
+                else:
+                    line = f"{line} {word}" if line else word
+            if line:
+                content.append(("", line))
+        else:
+            content.append(("", desc))
+
+        content.append(("", ""))  # Empty line
+        content.append(("Parameters", ""))
+
+        # Parameters
+        if hasattr(tool, "args_schema") and tool.args_schema:
+            schema = tool.args_schema
+            if hasattr(schema, "model_json_schema"):
+                # Pydantic v2
+                props = schema.model_json_schema().get("properties", {})
+            elif hasattr(schema, "schema"):
+                # Pydantic v1/v2 fallback
+                props = schema.schema().get("properties", {})
+            elif hasattr(schema, "__fields__"):
+                # Pydantic v1
+                props = {k: {"type": str(v.outer_type_)} for k, v in schema.__fields__.items()}
+            else:
+                props = {}
+
+            if props:
+                for param_name, param_info in props.items():
+                    param_type = param_info.get("type", "any")
+                    content.append(("", f"• {param_name}: {param_type}"))
+            else:
+                content.append(("", "(no parameters)"))
+        else:
+            content.append(("", "(no parameters)"))
+
+        view = DetailView(
+            title=f"{tool_short_name} ({server_name})",
+            content=content,
+        )
+        await view.run_async()
 
     def _handle_models_command(self, args: str) -> None:
         """Handle the /models command for managing model profiles and aliases.
