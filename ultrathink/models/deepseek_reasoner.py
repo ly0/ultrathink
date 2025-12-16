@@ -246,7 +246,17 @@ class ChatDeepSeekReasoner(BaseChatModel):
             elif isinstance(tool, BaseTool):
                 # Convert BaseTool to OpenAI format
                 try:
-                    schema = tool.args_schema.model_json_schema() if tool.args_schema else {"type": "object", "properties": {}}
+                    args_schema = tool.args_schema
+                    if args_schema is None:
+                        schema = {"type": "object", "properties": {}}
+                    elif isinstance(args_schema, dict):
+                        # MCP tools may have args_schema as dict directly
+                        schema = args_schema
+                    elif hasattr(args_schema, "model_json_schema"):
+                        # Pydantic model
+                        schema = args_schema.model_json_schema()
+                    else:
+                        schema = {"type": "object", "properties": {}}
                 except Exception:
                     # Fallback for tools with problematic schemas
                     schema = {"type": "object", "properties": {}}
