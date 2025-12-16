@@ -26,37 +26,9 @@ from ultrathink.core.system_prompt import build_system_prompt
 
 def get_default_subagents() -> List[Dict[str, Any]]:
     """Get default subagent definitions."""
-    return [
-        {
-            "name": "explore",
-            "description": "Fast agent for exploring codebases. Use for file searches, "
-            "code searches, and answering questions about the codebase.",
-            "system_prompt": (
-                "You are a codebase exploration specialist. Your job is to quickly "
-                "find files, search code patterns, and understand project structure. "
-                "Use glob, grep, and read_file tools efficiently. Return concise findings."
-            ),
-        },
-        {
-            "name": "research",
-            "description": "Agent for deep research requiring multiple searches "
-            "and comprehensive analysis.",
-            "system_prompt": (
-                "You are an expert researcher. Conduct thorough research on the given topic. "
-                "Use multiple sources, verify information, and provide comprehensive findings "
-                "with proper citations."
-            ),
-        },
-        {
-            "name": "code-review",
-            "description": "Agent for reviewing code changes and suggesting improvements.",
-            "system_prompt": (
-                "You are a senior code reviewer. Analyze code for bugs, security issues, "
-                "performance problems, and style violations. Provide actionable feedback "
-                "with specific line references."
-            ),
-        },
-    ]
+    from ultrathink.subagents.definitions import get_subagents_as_dicts
+
+    return get_subagents_as_dicts()
 
 
 def init_model(
