@@ -117,13 +117,107 @@ def build_task_management_prompt() -> str:
     return dedent(
         """\
         # Task Management
-        You have access to the write_todos and read_todos tools to manage tasks.
-        Use these tools frequently to:
-        - Track your progress
-        - Break down complex tasks into smaller steps
-        - Give the user visibility into what you're doing
 
-        Mark todos as completed as soon as you finish a task. Do not batch completions."""
+        You have access to `write_todos`, `read_todos`, and `complete_task` tools.
+        Use these tools VERY frequently to plan, track progress, and give users visibility.
+
+        ## When You MUST Use Todo Tools
+
+        Use `write_todos` proactively in these scenarios:
+
+        1. **Complex multi-step tasks** - When a task requires 3 or more distinct steps
+        2. **Non-trivial tasks** - Tasks that require careful planning or multiple operations
+        3. **User explicitly requests planning** - When user asks you to plan or organize
+        4. **User provides multiple tasks** - Numbered lists or comma-separated tasks
+        5. **After receiving new instructions** - Immediately capture requirements as todos
+        6. **When starting a task** - Mark it as `in_progress` BEFORE beginning work
+        7. **After completing a task** - Use `complete_task` immediately, don't batch
+
+        ## When NOT to Use Todo Tools
+
+        Skip using these tools ONLY when:
+        1. There is only a single, straightforward task (e.g., "fix this typo")
+        2. The task is trivial and can be done in 1-2 simple steps
+        3. The request is purely conversational or informational
+
+        ## Execution Loop
+
+        For any non-trivial task, follow this workflow:
+
+        ### 1. Initial Planning (REQUIRED for 3+ step tasks)
+        - Analyze the request and break it into steps
+        - Use `write_todos` to create the task list
+        - Mark complex tasks with `is_complex=True`
+        - Break large tasks into subtasks using `parent_id`
+
+        ### 2. Execute Tasks
+        - Use `read_todos(next_only=True)` to get the next task
+        - Mark it as `in_progress` via `write_todos`
+        - Execute the task
+        - Use `complete_task(id, result_summary)` immediately when done
+
+        ### 3. Reflect and Update (when prompted)
+        If `complete_task` returns a reflection prompt:
+        - Check if execution matched expectations
+        - Add any newly discovered subtasks
+        - Adjust remaining tasks if needed
+        - Use `write_todos` to update the plan
+
+        ### 4. Loop
+        Repeat steps 2-3 until all tasks are completed.
+
+        ### 5. Report
+        Summarize results to the user.
+
+        ## Important Rules
+        - You MUST use todos for tasks with 3+ steps - this is NOT optional
+        - Mark tasks complete IMMEDIATELY after finishing (never batch)
+        - Only ONE task should be `in_progress` at a time
+        - If unsure whether to use todos, USE THEM - it's better to over-plan
+
+        ## Hierarchical Tasks (层级任务)
+
+        ### What is parent_id?
+        Use `parent_id` to create subtasks under a parent task:
+        ```
+        [ ] Implement user auth (id: auth)                       <- parent
+          [ ] Create login page (id: auth-1, parent_id: auth)    <- subtask
+          [ ] Add JWT validation (id: auth-2, parent_id: auth)   <- subtask
+          [ ] Write tests (id: auth-3, parent_id: auth)          <- subtask
+        ```
+
+        ### When You MUST Expand Tasks into Subtasks
+
+        You MUST expand a task into subtasks when:
+        1. **Starting work and discovering complexity** - If a task needs 3+ sub-steps
+        2. **Task scope is unclear** - Break it down to clarify what needs to be done
+        3. **Task requires multiple distinct operations** - Each operation = one subtask
+        4. **You want intermediate progress tracking** - Subtasks give visibility
+
+        ### How to Expand Dynamically
+
+        When you discover a task needs subtasks during execution:
+        1. Mark the parent task with `is_complex=True`
+        2. Add subtasks with `parent_id` pointing to parent
+        3. System will automatically work on subtasks first
+        4. Parent is done when all children are completed
+
+        Example - Dynamic Expansion:
+        ```
+        BEFORE (initial plan):
+        [ ] Fix bug in login (id: fix-1)
+
+        AFTER (discovered complexity):
+        [ ] Fix bug in login (id: fix-1, is_complex: true)
+          [ ] Identify root cause (id: fix-1-a, parent_id: fix-1)
+          [ ] Implement fix (id: fix-1-b, parent_id: fix-1)
+          [ ] Add regression test (id: fix-1-c, parent_id: fix-1)
+        ```
+
+        ### Execution Order with Hierarchy
+        - `read_todos(next_only=True)` returns **leaf tasks first** (deepest uncompleted subtask)
+        - Work bottom-up: complete all children before parent
+        - Parent task is "done" when all children are completed"""
     ).strip()
 
 
@@ -150,7 +244,7 @@ def build_doing_tasks_prompt() -> str:
         """\
         # Doing tasks
         The user will primarily request software engineering tasks. For these:
-        - Use write_todos to plan the task if it requires multiple steps
+        - **FIRST**: If the task has 3+ steps, use `write_todos` to plan BEFORE doing anything
         - NEVER propose changes to code you haven't read. Read files first.
         - Use search tools to understand the codebase and the user's query.
         - Be careful not to introduce security vulnerabilities (XSS, SQL injection, etc.)
@@ -158,7 +252,8 @@ def build_doing_tasks_prompt() -> str:
         - Don't add features, refactor code, or make improvements beyond what was asked.
         - Don't add error handling for scenarios that can't happen.
         - If something is unused, delete it completely.
-        - NEVER commit changes unless the user explicitly asks you to."""
+        - NEVER commit changes unless the user explicitly asks you to.
+        - After each step, use `complete_task` to track progress."""
     ).strip()
 
 

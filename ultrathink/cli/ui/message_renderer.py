@@ -4,13 +4,17 @@ This module handles formatting and displaying messages, tool calls,
 and other output in the terminal.
 """
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
+
+# Todo tool names for special rendering
+TODO_TOOLS = {"write_todos", "read_todos", "update_todo", "complete_task"}
 
 
 def render_message(
@@ -105,6 +109,191 @@ def _render_content_block(console: Console, block: Dict[str, Any], role: str) ->
         render_tool_use(console, "result", content, "result")
 
 
+def _render_todo_table(
+    console: Console,
+    todos: List[Dict[str, Any]],
+    title: str,
+    highlight_id: Optional[str] = None,
+) -> None:
+    """Render a todo list as a beautiful table.
+
+    Args:
+        console: Rich console
+        todos: List of todo items
+        title: Title for the panel
+        highlight_id: Optional task ID to highlight (for update/complete operations)
+    """
+    if not todos:
+        console.print(Panel("[dim]No todos[/dim]", title=title, border_style="cyan"))
+        return
+
+    # Status icons and colors
+    status_style = {
+        "pending": ("[ ]", "white"),
+        "in_progress": ("[>]", "yellow bold"),
+        "completed": ("[X]", "green"),
+    }
+
+    # Priority indicators
+    priority_style = {
+        "high": ("!", "red bold"),
+        "medium": ("", ""),
+        "low": ("~", "dim"),
+    }
+
+    table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 1),
+        expand=False,
+    )
+    table.add_column("Status", width=3, no_wrap=True)
+    table.add_column("Priority", width=1, no_wrap=True)
+    table.add_column("Content", no_wrap=True)
+    table.add_column("ID", style="dim", no_wrap=True)
+
+    for todo in todos:
+        status = todo.get("status", "pending")
+        priority = todo.get("priority", "medium")
+        content = todo.get("content", "")
+        task_id = str(todo.get("id", ""))
+        is_highlighted = highlight_id and task_id == highlight_id
+
+        status_icon, status_color = status_style.get(status, ("[ ]", "white"))
+        priority_icon, priority_color = priority_style.get(priority, ("", ""))
+
+        # Build content text with appropriate styling
+        content_text = Text()
+        if is_highlighted:
+            content_text.append("→ ", style="cyan bold")
+
+        if status == "completed":
+            content_text.append(content, style="dim strike")
+        elif status == "in_progress":
+            content_text.append(content, style="yellow bold")
+        elif is_highlighted:
+            content_text.append(content, style="cyan bold")
+        else:
+            content_text.append(content)
+
+        table.add_row(
+            Text(status_icon, style=status_color),
+            Text(priority_icon, style=priority_color),
+            content_text,
+            task_id[:8] if len(task_id) > 8 else task_id,
+        )
+
+    console.print(Panel(table, title=title, border_style="cyan", padding=(0, 0)))
+
+
+def _get_current_todos_as_dicts() -> List[Dict[str, Any]]:
+    """Load current todos and convert to dicts for rendering."""
+    try:
+        from ultrathink.utils.todo import load_todos
+
+        todos = load_todos()
+        return [
+            {
+                "id": todo.id,
+                "content": todo.content,
+                "status": todo.status,
+                "priority": todo.priority,
+            }
+            for todo in todos
+        ]
+    except Exception:
+        return []
+
+
+def _render_todo_call(console: Console, tool_name: str, data: Any) -> None:
+    """Render a todo tool call with beautiful formatting.
+
+    Args:
+        console: Rich console
+        tool_name: Name of the todo tool
+        data: Tool input data
+    """
+    if tool_name == "write_todos":
+        todos = data.get("todos", []) if isinstance(data, dict) else []
+        _render_todo_table(console, todos, "[bold cyan]📝 Write Todos[/bold cyan]")
+
+    elif tool_name == "update_todo":
+        # Show update details and current todo list
+        if isinstance(data, dict):
+            task_id = data.get("task_id", "?")
+            updates = []
+            if "status" in data:
+                updates.append(f"status → {data['status']}")
+            if "content" in data:
+                updates.append(f"content → {data['content']}")
+            if "priority" in data:
+                updates.append(f"priority → {data['priority']}")
+            update_str = ", ".join(updates) if updates else "no changes"
+
+            # Show operation info
+            console.print(Panel(
+                f"Task [bold]{task_id}[/bold]: {update_str}",
+                title="[bold cyan]✏️  Update Todo[/bold cyan]",
+                border_style="cyan",
+                padding=(0, 1),
+            ))
+
+            # Show current todo list with highlighted task
+            todos = _get_current_todos_as_dicts()
+            if todos:
+                _render_todo_table(console, todos, "[dim]Current Todos[/dim]", highlight_id=str(task_id))
+        else:
+            console.print(Panel(str(data), title="[bold cyan]✏️  Update Todo[/bold cyan]", border_style="cyan"))
+
+    elif tool_name == "complete_task":
+        if isinstance(data, dict):
+            task_id = data.get("task_id", "?")
+            summary = data.get("result_summary", "")
+            content = f"Task [bold]{task_id}[/bold]"
+            if summary:
+                content += f"\nResult: {summary}"
+
+            # Show operation info
+            console.print(Panel(
+                content,
+                title="[bold cyan]✅ Complete Task[/bold cyan]",
+                border_style="cyan",
+                padding=(0, 1),
+            ))
+
+            # Show current todo list with highlighted task
+            todos = _get_current_todos_as_dicts()
+            if todos:
+                _render_todo_table(console, todos, "[dim]Current Todos[/dim]", highlight_id=str(task_id))
+        else:
+            console.print(Panel(str(data), title="[bold cyan]✅ Complete Task[/bold cyan]", border_style="cyan"))
+
+    elif tool_name == "read_todos":
+        # Show filter parameters
+        if isinstance(data, dict):
+            filters = []
+            if data.get("status"):
+                filters.append(f"status={data['status']}")
+            if data.get("next_only"):
+                filters.append("next_only=True")
+            if data.get("limit"):
+                filters.append(f"limit={data['limit']}")
+            filter_str = ", ".join(filters) if filters else "all"
+            console.print(Panel(
+                f"Filter: {filter_str}",
+                title="[bold cyan]📋 Read Todos[/bold cyan]",
+                border_style="cyan",
+                padding=(0, 1),
+            ))
+
+            # Show current todo list
+            todos = _get_current_todos_as_dicts()
+            if todos:
+                _render_todo_table(console, todos, "[dim]Current Todos[/dim]")
+        else:
+            console.print(Panel("(no filters)", title="[bold cyan]📋 Read Todos[/bold cyan]", border_style="cyan"))
+
+
 def render_tool_use(
     console: Console,
     tool_name: str,
@@ -119,6 +308,19 @@ def render_tool_use(
         data: Tool input or output data
         event_type: "call" or "result"
     """
+    # Special rendering for todo tools
+    if tool_name in TODO_TOOLS:
+        if event_type == "call":
+            _render_todo_call(console, tool_name, data)
+            return
+        elif event_type == "result":
+            # For update_todo and complete_task, show the updated todo list after operation
+            if tool_name in ("update_todo", "complete_task"):
+                todos = _get_current_todos_as_dicts()
+                if todos:
+                    _render_todo_table(console, todos, "[bold green]📋 Updated Todos[/bold green]")
+            return
+
     if event_type == "call":
         # Format tool call
         title = f"[bold cyan]Tool:[/bold cyan] {tool_name}"
@@ -144,7 +346,6 @@ def render_tool_use(
         ))
 
     elif event_type == "result":
-        # Format tool result
         content = str(data) if data else "(no output)"
 
         # Truncate very long results

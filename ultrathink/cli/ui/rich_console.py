@@ -515,10 +515,13 @@ class UltrathinkUI:
 
         # Create spinner for thinking indicator
         prompt_tokens = len(user_input.split()) * 2  # Rough estimate
-        spinner = ThinkingSpinner(self.console, prompt_tokens=prompt_tokens)
+        spinner = ThinkingSpinner(
+            self.console, prompt_tokens=prompt_tokens, user_input=user_input
+        )
 
         try:
             spinner.start()
+            spinner.start_dynamic_generation()  # Generate dynamic thinking word
 
             # Prepare messages for agent (include summary if exists)
             messages = self.session.get_messages_with_summary()

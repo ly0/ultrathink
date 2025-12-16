@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner as RichSpinner
 from rich.table import Table
 from rich.text import Text
+
+if TYPE_CHECKING:
+    from asyncio import Task
 
 
 THINKING_WORDS: list[str] = [
@@ -70,6 +74,7 @@ class ThinkingSpinner:
         prompt_tokens: int = 0,
         spinner_style: str = "dots",
         status_func: Optional[Callable[[], str]] = None,
+        user_input: Optional[str] = None,
     ) -> None:
         """Initialize the thinking spinner.
 
@@ -78,6 +83,7 @@ class ThinkingSpinner:
             prompt_tokens: Number of input tokens (for display)
             spinner_style: Rich spinner animation style
             status_func: Optional callable that returns model status string
+            user_input: Optional user input for dynamic thinking word generation
         """
         self.console = console
         self.prompt_tokens = prompt_tokens
@@ -89,6 +95,11 @@ class ThinkingSpinner:
         self._running = False
         self._current_suffix: Optional[str] = None
         self._status_func = status_func
+        self._user_input = user_input
+        self._generation_task: Optional[Task] = None
+        self._sync_task: Optional[Task] = None
+        self._current_todo_id: Optional[str] = None
+        self._model_generated: bool = False  # Track if we've tried model generation
 
     def _format_text(self, suffix: Optional[str] = None) -> Text:
         """Format the spinner text with current state.
@@ -186,6 +197,11 @@ class ThinkingSpinner:
             return
 
         self._running = False
+        # Cancel background tasks
+        if self._sync_task and not self._sync_task.done():
+            self._sync_task.cancel()
+        if self._generation_task and not self._generation_task.done():
+            self._generation_task.cancel()
         if self._live:
             self._live.stop()
             self._live = None
@@ -240,3 +256,97 @@ class ThinkingSpinner:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit."""
         self.stop()
+
+    def update_thinking_word(self, word: str) -> None:
+        """Dynamically update the thinking word and refresh display.
+
+        Args:
+            word: New thinking word/phrase to display
+        """
+        self.thinking_word = word
+        self.update()
+
+    def _get_current_todo(self) -> Optional[tuple]:
+        """Get current actionable TODO item (in_progress first, then pending).
+
+        Returns:
+            Tuple of (todo_id, todo_content) or None if no actionable TODO
+        """
+        try:
+            from ultrathink.utils.todo import get_next_actionable, load_todos
+
+            todos = load_todos()
+            actionable_todo = get_next_actionable(todos)
+            if actionable_todo:
+                return (actionable_todo.id, actionable_todo.content)
+        except Exception:
+            pass
+        return None
+
+    async def _sync_todo_loop(self) -> None:
+        """Background loop to sync thinking word with TODO status.
+
+        Runs every 0.5 seconds to check for TODO changes.
+        """
+        while self._running:
+            try:
+                todo_info = self._get_current_todo()
+
+                if todo_info:
+                    todo_id, todo_content = todo_info
+                    # Only update if TODO changed
+                    if todo_id != self._current_todo_id:
+                        self._current_todo_id = todo_id
+                        word = todo_content
+                        if len(word) > 50:
+                            word = word[:47] + "..."
+                        self.update_thinking_word(word)
+                elif self._current_todo_id is not None:
+                    # TODO was cleared, try model generation if not done yet
+                    self._current_todo_id = None
+                    if not self._model_generated:
+                        self._model_generated = True
+                        await self._generate_from_model()
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+            await asyncio.sleep(0.5)
+
+    async def _generate_from_model(self) -> None:
+        """Generate thinking word from user input via quick model."""
+        if not self._user_input:
+            return
+
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            from ultrathink.core.agent_factory import init_model
+            from ultrathink.core.config import get_model_profile
+
+            quick_profile = get_model_profile("quick")
+            if quick_profile is None:
+                quick_profile = get_model_profile("main")
+
+            model = init_model(profile=quick_profile)
+            response = await model.ainvoke([
+                SystemMessage(content=(
+                    "根据用户输入，生成一个不超过8个词的动词短语描述'我正在做什么'。"
+                    "只输出短语本身，不要其他内容。语言与用户输入保持一致。"
+                )),
+                HumanMessage(content=self._user_input),
+            ])
+
+            word = response.content.strip()
+            # Validate: non-empty and within word limit
+            if word and len(word.split()) <= 8:
+                self.update_thinking_word(word)
+        except Exception:
+            pass
+
+    def start_dynamic_generation(self) -> None:
+        """Start background task to sync TODO status and generate dynamic thinking word."""
+        if self._sync_task is None:
+            self._sync_task = asyncio.create_task(self._sync_todo_loop())

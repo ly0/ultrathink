@@ -10,6 +10,7 @@ from langchain_core.tools import BaseTool
 
 from ultrathink.tools.ask_user import create_ask_user_tool, create_ask_user_multi_tool
 from ultrathink.tools.filesystem import create_filesystem_tools
+from ultrathink.tools.todo_tool import create_todo_tools
 
 
 def get_custom_tools(
@@ -47,7 +48,10 @@ def get_custom_tools(
     if include_filesystem:
         tools.extend(create_filesystem_tools(working_dir))
 
+    # Add todo tools for task management
+    tools.extend(create_todo_tools(working_dir))
+
     return tools
 
 
-__all__ = ["get_custom_tools", "create_filesystem_tools"]
+__all__ = ["get_custom_tools", "create_filesystem_tools", "create_todo_tools"]

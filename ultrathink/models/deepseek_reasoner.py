@@ -419,6 +419,7 @@ class ChatDeepSeekReasoner(BaseChatModel):
         reasoning_content = ""
         content = ""
         tool_calls_data: Dict[int, Dict[str, Any]] = {}
+        yielded_any = False
 
         for chunk in response:
             if not chunk.choices:
@@ -436,6 +437,7 @@ class ChatDeepSeekReasoner(BaseChatModel):
                         additional_kwargs={"reasoning_chunk": delta.reasoning_content},
                     )
                 )
+                yielded_any = True
 
             # Accumulate content
             if delta.content:
@@ -443,6 +445,7 @@ class ChatDeepSeekReasoner(BaseChatModel):
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(content=delta.content)
                 )
+                yielded_any = True
 
             # Handle tool calls
             if delta.tool_calls:
@@ -484,6 +487,19 @@ class ChatDeepSeekReasoner(BaseChatModel):
                     additional_kwargs=additional_kwargs,
                 )
             )
+            yielded_any = True
+
+        # Ensure at least one chunk is yielded to avoid "No generations found in stream" error
+        if not yielded_any:
+            additional_kwargs = {}
+            if reasoning_content:
+                additional_kwargs[REASONING_CONTENT_KEY] = reasoning_content
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content=content,
+                    additional_kwargs=additional_kwargs,
+                )
+            )
 
     async def _astream(
         self,
@@ -516,6 +532,7 @@ class ChatDeepSeekReasoner(BaseChatModel):
         reasoning_content = ""
         content = ""
         tool_calls_data: Dict[int, Dict[str, Any]] = {}
+        yielded_any = False
 
         async for chunk in response:
             if not chunk.choices:
@@ -532,6 +549,7 @@ class ChatDeepSeekReasoner(BaseChatModel):
                         additional_kwargs={"reasoning_chunk": delta.reasoning_content},
                     )
                 )
+                yielded_any = True
 
             # Accumulate content
             if delta.content:
@@ -539,6 +557,7 @@ class ChatDeepSeekReasoner(BaseChatModel):
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(content=delta.content)
                 )
+                yielded_any = True
 
             # Handle tool calls
             if delta.tool_calls:
@@ -577,6 +596,19 @@ class ChatDeepSeekReasoner(BaseChatModel):
                 message=AIMessageChunk(
                     content="",
                     tool_calls=tool_calls,
+                    additional_kwargs=additional_kwargs,
+                )
+            )
+            yielded_any = True
+
+        # Ensure at least one chunk is yielded to avoid "No generations found in stream" error
+        if not yielded_any:
+            additional_kwargs = {}
+            if reasoning_content:
+                additional_kwargs[REASONING_CONTENT_KEY] = reasoning_content
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content=content,
                     additional_kwargs=additional_kwargs,
                 )
             )
