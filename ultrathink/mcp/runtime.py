@@ -3,6 +3,8 @@
 This module handles MCP server lifecycle and tool management.
 """
 
+import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +12,28 @@ from langchain_core.tools import BaseTool
 
 from ultrathink.mcp.config_loader import load_mcp_config, get_mcp_server_names
 from ultrathink.mcp.tool_adapter import create_mcp_tool
+
+
+def _suppress_mcp_logging() -> None:
+    """Suppress noisy MCP logging unless ULTRATHINK_DEBUG is set."""
+    if os.environ.get("ULTRATHINK_DEBUG"):
+        return
+
+    # MCP library loggers that produce verbose output
+    mcp_loggers = [
+        "mcp",
+        "mcp.client",
+        "mcp.server",
+        "mcp.shared",
+        "mcp.shared.session",
+        "langchain_mcp_adapters",
+    ]
+
+    for name in mcp_loggers:
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.WARNING)
+        logger.handlers = []
+        logger.propagate = False
 
 
 class MCPRuntime:
@@ -33,6 +57,7 @@ class MCPRuntime:
         self._client: Optional[Any] = None
         self._tools: List[BaseTool] = []
         self._initialized = False
+        self._init_error: Optional[str] = None
 
     @property
     def config(self) -> Optional[Dict[str, Any]]:
@@ -136,6 +161,30 @@ class MCPRuntime:
             return
 
         try:
+            # Suppress MCP logging before importing/using the client
+            _suppress_mcp_logging()
+
+            # Monkeypatch the MCP client to suppress subprocess stderr
+            # unless debug mode is enabled
+            if not os.environ.get("ULTRATHINK_DEBUG"):
+                from contextlib import asynccontextmanager
+                import mcp.client.stdio as stdio_module
+
+                # Check if we've already patched
+                if not hasattr(stdio_module, "_ultrathink_patched"):
+                    _original_stdio_client = stdio_module.stdio_client
+
+                    @asynccontextmanager
+                    async def _quiet_stdio_client(server, errlog=None):
+                        """Wrapper that redirects errlog to /dev/null."""
+                        # Use os.devnull for proper file descriptor support
+                        with open(os.devnull, 'w') as null_file:
+                            async with _original_stdio_client(server, errlog=null_file) as result:
+                                yield result
+
+                    stdio_module.stdio_client = _quiet_stdio_client
+                    stdio_module._ultrathink_patched = True
+
             from langchain_mcp_adapters.client import MultiServerMCPClient
 
             # Create client and get tools (new API - no context manager)
@@ -175,12 +224,19 @@ class MCPRuntime:
 
             self._initialized = True
 
-        except ImportError:
-            # langchain-mcp-adapters not installed
+        except ImportError as e:
+            # langchain-mcp-adapters not installed - only warn in debug mode
+            if os.environ.get("ULTRATHINK_DEBUG"):
+                print(f"Warning: langchain-mcp-adapters not available: {e}")
             self._initialized = True
         except Exception as e:
             # Log error but continue without MCP
-            print(f"Warning: Failed to initialize MCP: {e}")
+            # Always show a brief warning, but only show traceback in debug mode
+            self._init_error = str(e)
+            if os.environ.get("ULTRATHINK_DEBUG"):
+                import traceback
+                print(f"Warning: Failed to initialize MCP: {e}")
+                traceback.print_exc()
             self._initialized = True
 
     async def _call_tool(
@@ -249,7 +305,17 @@ async def get_mcp_runtime(project_path: Optional[Path] = None) -> MCPRuntime:
     """
     global _runtime
 
-    if _runtime is None or (project_path and _runtime.project_path != project_path):
+    # Resolve paths for consistent comparison
+    if project_path:
+        project_path = project_path.resolve()
+
+    # Check if we need to create a new runtime
+    need_new_runtime = _runtime is None
+    if not need_new_runtime and project_path:
+        current_path = _runtime.project_path.resolve() if _runtime.project_path else None
+        need_new_runtime = current_path != project_path
+
+    if need_new_runtime:
         if _runtime:
             await _runtime.cleanup()
         _runtime = MCPRuntime(project_path)
@@ -269,3 +335,67 @@ async def get_mcp_tools(project_path: Optional[Path] = None) -> List[BaseTool]:
     """
     runtime = await get_mcp_runtime(project_path)
     return runtime.tools
+
+
+def format_mcp_instructions(runtime: MCPRuntime) -> str:
+    """Build MCP instruction block for the system prompt.
+
+    This creates a concise summary of available MCP servers and their tools
+    that helps the model understand what MCP capabilities are available.
+
+    Args:
+        runtime: The MCP runtime instance
+
+    Returns:
+        Formatted instruction string for the system prompt
+    """
+    if not runtime or not runtime._initialized:
+        return ""
+
+    config = runtime.config
+    if not config:
+        return ""
+
+    lines: List[str] = [
+        "MCP servers are available. Tools from these servers are prefixed with mcp__<server>__<tool>.",
+    ]
+
+    for server_name, server_config in config.items():
+        # Get server status
+        status = "connected" if runtime._initialized and runtime._client else "not started"
+
+        # Build server line
+        transport = server_config.get("transport", "stdio")
+        cmd = server_config.get("command", "")
+        lines.append(f"- {server_name} [{status}] ({transport})")
+
+        if cmd:
+            args = " ".join(server_config.get("args", []))[:50]
+            lines.append(f"  Command: {cmd} {args}")
+
+        # Get tools for this server
+        server_tools = [t for t in runtime.tools if t.name.startswith(f"mcp__{server_name}__")]
+        if server_tools:
+            tool_names = [t.name.split("__")[-1] for t in server_tools[:6]]
+            tool_summary = ", ".join(tool_names)
+            if len(server_tools) > 6:
+                tool_summary += f", and {len(server_tools) - 6} more"
+            lines.append(f"  Tools: {tool_summary}")
+
+    return "\n".join(lines)
+
+
+def get_mcp_instructions_sync(project_path: Optional[Path] = None) -> str:
+    """Get MCP instructions synchronously (for use when runtime is already initialized).
+
+    Args:
+        project_path: Project directory
+
+    Returns:
+        MCP instructions string or empty string
+    """
+    global _runtime
+
+    if _runtime and _runtime._initialized:
+        return format_mcp_instructions(_runtime)
+    return ""

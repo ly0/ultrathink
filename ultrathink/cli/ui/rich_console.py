@@ -51,6 +51,7 @@ SLASH_COMMANDS = {
     "/models": "Manage model profiles and aliases",
     "/agents": "List available subagents",
     "/mcp": "Show MCP server status",
+    "/memory": "List and edit AGENTS memory files",
     "/exit": "Exit Ultrathink",
     "/quit": "Exit Ultrathink",
 }
@@ -66,6 +67,11 @@ SLASH_SUBCOMMANDS = {
         "unalias": "Remove a custom alias: <alias>",
         "use": "Set main to use profile/alias: <name>",
         "help": "Show /models help",
+    },
+    "memory": {
+        "project": "Open/create AGENTS.md in project root",
+        "local": "Open/create AGENTS.local.md (private, not checked in)",
+        "user": "Open/create ~/.ultrathink/AGENTS.md",
     },
 }
 
@@ -365,10 +371,16 @@ class UltrathinkUI:
         """Initialize MCP configuration (synchronous, config loading only)."""
         from ultrathink.mcp.config_loader import load_mcp_config
 
+        if self.verbose:
+            self.console.print(f"[dim]MCP: Loading config from {self.cwd}...[/dim]")
+
         self._mcp_config = load_mcp_config(self.cwd)
         if self._mcp_config:
             server_count = len(self._mcp_config)
-            self.console.print(f"[dim]MCP: Found {server_count} server(s) configured[/dim]")
+            server_names = list(self._mcp_config.keys())
+            self.console.print(f"[dim]MCP: Found {server_count} server(s): {server_names}[/dim]")
+        elif self.verbose:
+            self.console.print("[dim]MCP: No configuration found[/dim]")
 
     def _display_welcome(self) -> None:
         """Display the welcome banner."""
@@ -438,11 +450,33 @@ class UltrathinkUI:
         from ultrathink.mcp.runtime import get_mcp_runtime
 
         try:
+            if self.verbose:
+                self.console.print("[dim]MCP: Initializing servers...[/dim]")
+
             runtime = await get_mcp_runtime(self.cwd)
+
+            # Check for initialization errors
+            if runtime._init_error:
+                self.console.print(f"[yellow]MCP: Server initialization failed (use -v for details)[/yellow]")
+                if self.verbose:
+                    self.console.print(f"[dim]  Error: {runtime._init_error}[/dim]")
+                return
+
             if runtime.tools:
+                tool_names = [t.name for t in runtime.tools]
                 self.console.print(f"[green]MCP: Loaded {len(runtime.tools)} tool(s)[/green]")
+                if self.verbose:
+                    for name in tool_names[:10]:
+                        self.console.print(f"[dim]  - {name}[/dim]")
+                    if len(tool_names) > 10:
+                        self.console.print(f"[dim]  ... and {len(tool_names) - 10} more[/dim]")
+            else:
+                self.console.print("[yellow]MCP: No tools loaded[/yellow]")
         except Exception as e:
+            import traceback
             self.console.print(f"[yellow]MCP: Failed to start servers: {e}[/yellow]")
+            if self.verbose:
+                self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
     async def _cleanup_mcp(self) -> None:
         """Clean up MCP runtime."""
@@ -637,6 +671,8 @@ class UltrathinkUI:
             self._show_agents(cmd_arg)
         elif cmd_name == "mcp":
             await self._show_mcp_status()
+        elif cmd_name in ("memory", "mem"):
+            self._handle_memory_command(cmd_arg)
         else:
             self.console.print(f"[red]Unknown command: /{cmd_name}[/red]")
             self.console.print("[dim]Type /help for available commands[/dim]")
@@ -653,6 +689,7 @@ class UltrathinkUI:
 [cyan]/models[/cyan]    Manage model profiles and aliases
 [cyan]/agents[/cyan]    List available subagents
 [cyan]/mcp[/cyan]       Show MCP server status
+[cyan]/memory[/cyan]    List and edit AGENTS memory files
 [cyan]/exit[/cyan]      Exit Ultrathink
 
 [bold cyan]Tips[/bold cyan]
@@ -772,6 +809,193 @@ class UltrathinkUI:
 
         self.console.print(table)
         self.console.print("\n[dim]Use /agents <name> to see details for a specific agent.[/dim]")
+
+    def _handle_memory_command(self, args: str) -> None:
+        """Handle the /memory command for viewing and editing AGENTS memory files.
+
+        Args:
+            args: Command arguments (scope: project, local, user)
+        """
+        from rich.table import Table
+        from rich.markup import escape
+
+        from ultrathink.utils.memory import (
+            MEMORY_FILE_NAME,
+            LOCAL_MEMORY_FILE_NAME,
+            collect_all_memory_files,
+        )
+
+        scope = args.strip().lower()
+
+        if scope:
+            scope_aliases = {
+                "project": "project",
+                "workspace": "project",
+                "local": "local",
+                "private": "local",
+                "user": "user",
+                "global": "user",
+            }
+            if scope not in scope_aliases:
+                self.console.print("[red]Unknown scope. Use one of: project, local, user.[/red]")
+                return
+
+            resolved_scope = scope_aliases[scope]
+            if resolved_scope == "project":
+                target_path = self.cwd / MEMORY_FILE_NAME
+                heading = "Project memory (checked in)"
+            elif resolved_scope == "local":
+                target_path = self.cwd / LOCAL_MEMORY_FILE_NAME
+                heading = "Local memory (not checked in)"
+            else:
+                target_path = self._preferred_user_memory_path()
+                heading = "User memory (home directory)"
+
+            created = self._ensure_memory_file(target_path)
+            gitignore_added = False
+            if resolved_scope == "local":
+                gitignore_added = self._ensure_gitignore_entry(LOCAL_MEMORY_FILE_NAME)
+
+            self._open_in_editor(target_path)
+
+            messages = [f"{heading}: {self._shorten_path(target_path)}"]
+            if created:
+                messages.append("Created new memory file.")
+            if gitignore_added:
+                messages.append("Added AGENTS.local.md to .gitignore.")
+            if not created:
+                messages.append("Opened existing memory file.")
+
+            self.console.print(Panel("\n".join(messages), title="/memory"))
+            return
+
+        # List all memory files
+        self._render_memory_table()
+
+    def _render_memory_table(self) -> None:
+        """Render table of all loaded memory files."""
+        from rich.table import Table
+        from rich.markup import escape
+        from ultrathink.utils.memory import collect_all_memory_files
+
+        files = collect_all_memory_files()
+        table = Table(title="Memory files", show_header=True, header_style="bold cyan")
+        table.add_column("Type", style="bold")
+        table.add_column("Location")
+        table.add_column("Nested", justify="center")
+
+        for memory_file in files:
+            display_path = self._shorten_path(Path(memory_file.path))
+            nested = "yes" if getattr(memory_file, "is_nested", False) else ""
+            table.add_row(memory_file.type, escape(display_path), nested)
+
+        if files:
+            self.console.print(table)
+        else:
+            self.console.print("[yellow]No memory files found yet.[/yellow]")
+
+        self.console.print("[dim]Usage: /memory project | /memory local | /memory user[/dim]")
+        self.console.print("[dim]Memory files are automatically loaded into the system prompt.[/dim]")
+
+    def _preferred_user_memory_path(self) -> Path:
+        """Get the preferred user-level memory path."""
+        from ultrathink.utils.memory import MEMORY_FILE_NAME
+
+        home = Path.home()
+        preferred_dir = home / ".ultrathink"
+        preferred_path = preferred_dir / MEMORY_FILE_NAME
+        fallback_path = home / MEMORY_FILE_NAME
+
+        if preferred_path.exists():
+            return preferred_path
+        if fallback_path.exists():
+            return fallback_path
+
+        preferred_dir.mkdir(parents=True, exist_ok=True)
+        return preferred_path
+
+    def _ensure_memory_file(self, path: Path) -> bool:
+        """Ensure the memory file exists. Returns True if created."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            return False
+        path.write_text("", encoding="utf-8")
+        return True
+
+    def _ensure_gitignore_entry(self, entry: str) -> bool:
+        """Ensure an entry exists in .gitignore. Returns True if added."""
+        gitignore_path = self.cwd / ".gitignore"
+        try:
+            text = ""
+            if gitignore_path.exists():
+                text = gitignore_path.read_text(encoding="utf-8", errors="ignore")
+                existing_lines = text.splitlines()
+                if entry in existing_lines:
+                    return False
+            with gitignore_path.open("a", encoding="utf-8") as f:
+                if text and not text.endswith("\n"):
+                    f.write("\n")
+                f.write(f"{entry}\n")
+            return True
+        except Exception:
+            return False
+
+    def _shorten_path(self, path: Path) -> str:
+        """Return a short, user-friendly path."""
+        try:
+            return str(path.resolve().relative_to(self.cwd.resolve()))
+        except Exception:
+            pass
+
+        home = Path.home()
+        try:
+            rel_home = path.resolve().relative_to(home)
+            return f"~/{rel_home}"
+        except Exception:
+            return str(path)
+
+    def _open_in_editor(self, path: Path) -> bool:
+        """Open the file in a text editor; returns True if launched."""
+        import os
+        import shlex
+        import shutil
+        import subprocess
+        from rich.markup import escape
+
+        editor_cmd = None
+        for env_var in ("VISUAL", "EDITOR"):
+            value = os.environ.get(env_var)
+            if value:
+                editor_cmd = shlex.split(value)
+                break
+
+        if not editor_cmd:
+            candidates = ["code", "nano", "vim", "vi"]
+            if os.name == "nt":
+                candidates.insert(0, "notepad")
+            for candidate in candidates:
+                if shutil.which(candidate):
+                    editor_cmd = [candidate]
+                    break
+
+        if not editor_cmd:
+            self.console.print(
+                f"[yellow]No editor configured. Set $EDITOR or $VISUAL, "
+                f"or manually edit: {escape(str(path))}[/yellow]"
+            )
+            return False
+
+        cmd = [*editor_cmd, str(path)]
+        try:
+            self.console.print(f"[dim]Opening with: {' '.join(editor_cmd)}[/dim]")
+            subprocess.run(cmd, check=False)
+            return True
+        except FileNotFoundError:
+            self.console.print(f"[red]Editor command not found: {escape(editor_cmd[0])}[/red]")
+            return False
+        except Exception as exc:
+            self.console.print(f"[red]Failed to launch editor: {escape(str(exc))}[/red]")
+            return False
 
     async def _show_mcp_status(self) -> None:
         """Show interactive MCP server management interface."""

@@ -212,13 +212,6 @@ async def create_ultrathink_agent(
     # Build subagents list
     all_subagents = subagents or get_default_subagents()
 
-    # Build system prompt if not provided
-    if system_prompt is None:
-        system_prompt = build_system_prompt(
-            cwd=working_dir,
-            subagents=all_subagents,
-        )
-
     # Collect tools
     all_tools = list(tools) if tools else []
 
@@ -234,18 +227,49 @@ async def create_ultrathink_agent(
     all_tools.extend(custom_tools)
 
     # Load MCP tools if configured (for all agent types)
+    # Must be done BEFORE building system prompt so MCP instructions can be included
+    mcp_instructions = None
     if mcp_config:
         try:
-            from ultrathink.mcp.runtime import get_mcp_runtime
+            from ultrathink.mcp.runtime import get_mcp_runtime, format_mcp_instructions
+
+            if verbose:
+                print(f"MCP: Config found with {len(mcp_config)} server(s)")
 
             mcp_runtime = await get_mcp_runtime(working_dir)
+
+            if verbose:
+                print(f"MCP: Runtime initialized, {len(mcp_runtime.tools)} tool(s) available")
+
             if mcp_runtime.tools:
                 all_tools.extend(mcp_runtime.tools)
+                # Format MCP instructions for system prompt
+                mcp_instructions = format_mcp_instructions(mcp_runtime)
                 if verbose:
-                    print(f"MCP: Loaded {len(mcp_runtime.tools)} tool(s)")
+                    tool_names = [t.name for t in mcp_runtime.tools[:5]]
+                    print(f"MCP: Added tools: {tool_names}...")
         except Exception as e:
+            import traceback
+            print(f"Warning: Failed to load MCP tools: {e}")
             if verbose:
-                print(f"Warning: Failed to load MCP tools: {e}")
+                traceback.print_exc()
+
+    # Load memory instructions from AGENTS.md files
+    from ultrathink.utils.memory import build_memory_instructions
+
+    memory_instructions = build_memory_instructions()
+    additional_instructions = []
+    if memory_instructions:
+        additional_instructions.append(memory_instructions)
+
+    # Build system prompt if not provided
+    if system_prompt is None:
+        system_prompt = build_system_prompt(
+            cwd=working_dir,
+            subagents=all_subagents,
+            additional_instructions=additional_instructions if additional_instructions else None,
+            mcp_instructions=mcp_instructions,
+        )
 
     # Check if we're using DeepSeek Reasoner
     is_deepseek_reasoner = False
@@ -259,6 +283,11 @@ async def create_ultrathink_agent(
 
         filesystem_tools = create_filesystem_tools(working_dir)
         all_tools.extend(filesystem_tools)
+
+        if verbose:
+            print(f"Creating agent with {len(all_tools)} tools:")
+            for tool in all_tools:
+                print(f"  - {tool.name}")
 
         return await _create_langgraph_agent(
             model=llm,

@@ -26,9 +26,13 @@ class MCPConfig(BaseModel):
 
 
 def load_mcp_config(project_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
-    """Load MCP configuration from project directory.
+    """Load MCP configuration from project and user directories.
 
-    Looks for mcp_config.json or .ultrathink/mcp.json in the project directory.
+    Searches for MCP config files in the following locations (in order):
+    1. User-level: ~/.ultrathink/mcp.json, ~/.mcp.json
+    2. Project-level: .mcp.json, mcp_config.json, .ultrathink/mcp.json
+
+    Multiple configs are merged, with project-level configs taking precedence.
 
     Args:
         project_path: Project directory path (defaults to cwd)
@@ -37,23 +41,35 @@ def load_mcp_config(project_path: Optional[Path] = None) -> Optional[Dict[str, A
         MCP configuration dict or None if not found
     """
     path = project_path or Path.cwd()
+    home = Path.home()
 
-    # Check possible config locations
+    # Config locations to check (in order of increasing precedence)
+    # Later configs override earlier ones
     config_paths = [
+        # User-level configs (lowest precedence)
+        home / ".ultrathink" / "mcp.json",
+        home / ".mcp.json",
+        # Project-level configs (highest precedence)
+        path / ".mcp.json",
         path / "mcp_config.json",
         path / ".ultrathink" / "mcp.json",
         path / ".ultrathink" / "mcp_config.json",
     ]
 
+    merged_config: Dict[str, Any] = {}
+
     for config_path in config_paths:
         if config_path.exists():
             try:
                 data = json.loads(config_path.read_text())
-                return _normalize_config(data)
+                normalized = _normalize_config(data)
+                if normalized:
+                    # Merge configs (later configs override earlier ones)
+                    merged_config.update(normalized)
             except Exception:
                 continue
 
-    return None
+    return merged_config if merged_config else None
 
 
 def _normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -115,8 +131,22 @@ def _normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
         if transport == "stdio":
             server_config["command"] = config.get("command", "")
             server_config["args"] = config.get("args", [])
-            if config.get("env"):
-                server_config["env"] = config["env"]
+
+            # Build env with log suppression unless debug mode is enabled
+            import os
+            env = dict(config.get("env", {}))
+            if not os.environ.get("ULTRATHINK_DEBUG"):
+                # Suppress MCP server logging via various common env vars
+                env.setdefault("FASTMCP_LOG_LEVEL", "WARNING")
+                env.setdefault("LOG_LEVEL", "WARNING")
+                env.setdefault("LOGLEVEL", "WARNING")
+                env.setdefault("MCP_LOG_LEVEL", "WARNING")
+                env.setdefault("PYTHONWARNINGS", "ignore")
+                # Disable verbose output in some tools
+                env.setdefault("QUIET", "1")
+            if env:
+                server_config["env"] = env
+
             if config.get("cwd"):
                 server_config["cwd"] = config["cwd"]
         else:

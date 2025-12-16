@@ -4,6 +4,7 @@ This module provides the command-line interface for Ultrathink.
 """
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,59 @@ import click
 
 from ultrathink import __version__
 from ultrathink.core.config import ensure_onboarding
+
+
+def configure_logging(verbose: bool = False) -> None:
+    """Configure logging levels based on verbose mode.
+
+    Args:
+        verbose: If True, show DEBUG/INFO logs. If False, only show WARNING and above.
+    """
+    import os
+
+    # Set environment variable for MCP runtime to check
+    if verbose:
+        os.environ["ULTRATHINK_DEBUG"] = "1"
+
+    # Set log level based on verbose flag
+    level = logging.DEBUG if verbose else logging.WARNING
+
+    # Configure root logger
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # List of noisy third-party loggers
+    noisy_loggers = [
+        "langchain_mcp_adapters",
+        "mcp",
+        "mcp.client",
+        "mcp.server",
+        "mcp.shared",
+        "mcp.shared.session",
+        "httpx",
+        "httpcore",
+        "urllib3",
+        "asyncio",
+        "anyio",
+        "langchain",
+        "langchain_core",
+        "langchain_anthropic",
+        "langchain_openai",
+        "openai",
+        "anthropic",
+    ]
+
+    for logger_name in noisy_loggers:
+        logger = logging.getLogger(logger_name)
+        if verbose:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.WARNING)
+            logger.handlers = []
+            logger.propagate = False
 
 
 @click.group(invoke_without_command=True)
@@ -62,6 +116,9 @@ def cli(
     Run without arguments to start interactive mode.
     Use --prompt/-p to execute a single command and exit.
     """
+    # Configure logging early (before any other imports trigger logging)
+    configure_logging(verbose)
+
     # Set working directory if specified
     if cwd:
         os.chdir(cwd)
