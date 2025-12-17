@@ -206,6 +206,24 @@ def build_task_management_prompt() -> str:
         2. Set `parent_id` to link subtasks to the parent
         3. Then continue with the first subtask
 
+        ### IMPORTANT: How to Expand Tasks
+
+        When you need to break down a task into subtasks:
+
+        DO:
+        - Use `insert_task` with `parent_id` pointing to the current task
+        - Use id format: `{parent_id}-a`, `{parent_id}-b`, etc.
+
+        DON'T:
+        - Use `write_todos` to rewrite the entire list (this will lose other tasks!)
+        - Create subtasks without setting `parent_id`
+
+        Example (for task "arch-1"):
+        ```
+        insert_task("arch-1-a", "First subtask", parent_id="arch-1")
+        insert_task("arch-1-b", "Second subtask", parent_id="arch-1")
+        ```
+
         ### Periodic Review (Every 3 Tasks)
         After completing every 3 tasks, you'll receive a review prompt.
         When you see this:

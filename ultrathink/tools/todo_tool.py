@@ -392,7 +392,12 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
                     "2. Would subtasks help track progress better?",
                     "3. Are there dependencies that should be separate tasks?",
                     "",
-                    "If yes, use insert_task to add subtasks before proceeding.",
+                    f"If yes, use insert_task with parent_id=\"{task_id}\" to add subtasks.",
+                    "DO NOT use write_todos - it will replace your entire plan!",
+                    "",
+                    "Example:",
+                    f"  insert_task(\"{task_id}-a\", \"First step\", parent_id=\"{task_id}\")",
+                    f"  insert_task(\"{task_id}-b\", \"Second step\", parent_id=\"{task_id}\")",
                 ])
 
             return "\n".join(output)
