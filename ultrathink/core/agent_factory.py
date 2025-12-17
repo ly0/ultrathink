@@ -198,6 +198,20 @@ async def create_ultrathink_agent(
     )
     all_tools.extend(custom_tools)
 
+    # Add task tool for subagent delegation
+    if all_subagents:
+        from ultrathink.tools.task_tool import create_task_tool
+
+        task_tool = create_task_tool(
+            subagents=all_subagents,
+            model=llm,
+            cwd=working_dir,
+            verbose=verbose,
+        )
+        all_tools.append(task_tool)
+        if verbose:
+            print(f"Added task tool with {len(all_subagents)} subagent(s)")
+
     # Load MCP tools if configured (for all agent types)
     # Must be done BEFORE building system prompt so MCP instructions can be included
     mcp_instructions = None
@@ -281,11 +295,11 @@ async def create_ultrathink_agent(
     all_middleware = list(middleware) if middleware else []
 
     # Create the agent
+    # Note: subagents are handled via custom task tool, not SubAgentMiddleware
     agent = create_deep_agent(
         model=llm,
         tools=all_tools if all_tools else None,
         system_prompt=system_prompt,
-        subagents=all_subagents if all_subagents else None,
         middleware=all_middleware if all_middleware else None,
         **kwargs,
     )

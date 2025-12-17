@@ -109,13 +109,57 @@ def _render_content_block(console: Console, block: Dict[str, Any], role: str) ->
         render_tool_use(console, "result", content, "result")
 
 
+def _get_indent_level(todo_id: str, todos: List[Dict[str, Any]], todo_map: Dict[str, Dict]) -> int:
+    """Calculate indent level for a todo based on parent chain."""
+    level = 0
+    current = todo_map.get(todo_id)
+    while current and current.get("parent_id"):
+        level += 1
+        current = todo_map.get(current["parent_id"])
+    return level
+
+
+def _get_hierarchical_order(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Reorder todos to show parent-child relationships.
+
+    Returns todos in hierarchical order: parent followed by its children.
+    """
+    todo_map = {str(t.get("id", "")): t for t in todos}
+    result = []
+    added = set()
+
+    def add_with_children(todo: Dict[str, Any]) -> None:
+        todo_id = str(todo.get("id", ""))
+        if todo_id in added:
+            return
+        added.add(todo_id)
+        result.append(todo)
+        # Add children
+        for t in todos:
+            if t.get("parent_id") == todo_id:
+                add_with_children(t)
+
+    # Start with root todos (no parent_id)
+    for todo in todos:
+        if not todo.get("parent_id"):
+            add_with_children(todo)
+
+    # Add any orphaned todos (parent not in list)
+    for todo in todos:
+        todo_id = str(todo.get("id", ""))
+        if todo_id not in added:
+            add_with_children(todo)
+
+    return result
+
+
 def _render_todo_table(
     console: Console,
     todos: List[Dict[str, Any]],
     title: str,
     highlight_id: Optional[str] = None,
 ) -> None:
-    """Render a todo list as a beautiful table.
+    """Render a todo list as a beautiful table with hierarchical display.
 
     Args:
         console: Rich console
@@ -141,6 +185,12 @@ def _render_todo_table(
         "low": ("~", "dim"),
     }
 
+    # Build todo map for indent calculation
+    todo_map = {str(t.get("id", "")): t for t in todos}
+
+    # Reorder todos hierarchically
+    ordered_todos = _get_hierarchical_order(todos)
+
     table = Table(
         show_header=False,
         box=None,
@@ -152,7 +202,7 @@ def _render_todo_table(
     table.add_column("Content", no_wrap=True)
     table.add_column("ID", style="dim", no_wrap=True)
 
-    for todo in todos:
+    for todo in ordered_todos:
         status = todo.get("status", "pending")
         priority = todo.get("priority", "medium")
         content = todo.get("content", "")
@@ -162,8 +212,14 @@ def _render_todo_table(
         status_icon, status_color = status_style.get(status, ("[ ]", "white"))
         priority_icon, priority_color = priority_style.get(priority, ("", ""))
 
+        # Calculate indent level
+        indent_level = _get_indent_level(task_id, todos, todo_map)
+        indent = "  " * indent_level
+
         # Build content text with appropriate styling
         content_text = Text()
+        if indent:
+            content_text.append(indent, style="dim")
         if is_highlighted:
             content_text.append("→ ", style="cyan bold")
 
@@ -198,6 +254,7 @@ def _get_current_todos_as_dicts() -> List[Dict[str, Any]]:
                 "content": todo.content,
                 "status": todo.status,
                 "priority": todo.priority,
+                "parent_id": todo.parent_id,
             }
             for todo in todos
         ]

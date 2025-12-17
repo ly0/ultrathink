@@ -11,10 +11,13 @@ from langchain_core.tools import tool
 
 from ultrathink.utils.todo import (
     TodoItem,
+    delete_todo,
     format_todo_lines,
     format_todo_summary,
+    get_children,
     get_next_actionable,
     has_children,
+    insert_todo,
     load_todos,
     save_todos,
     set_todos,
@@ -359,4 +362,132 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
         except Exception as e:
             return f"Error updating todo: {e}"
 
-    return [write_todos, read_todos, complete_task, update_todo]
+    @tool
+    def insert_task(
+        task_id: str,
+        content: str,
+        priority: str = "medium",
+        parent_id: Optional[str] = None,
+        insert_position: str = "last",
+        is_complex: bool = False,
+    ) -> str:
+        """Insert a single task without rewriting the entire todo list.
+
+        Use this for dynamically adding tasks discovered during execution,
+        or when receiving new requests while working on other tasks.
+
+        Args:
+            task_id: Unique identifier for the task
+            content: Task description
+            priority: "high", "medium", or "low" (default: "medium")
+                      High priority tasks will be worked on first.
+            parent_id: Parent task ID if this is a subtask (optional)
+            insert_position: Where to insert the task:
+                - "first": At the beginning of the list
+                - "last": At the end of the list (default)
+                - "next": After the current in_progress task
+                - "after:<task_id>": After a specific task
+            is_complex: Mark as complex task requiring reflection (default: False)
+
+        Returns:
+            Confirmation with updated task list
+        """
+        try:
+            # Validate priority
+            if priority not in ("high", "medium", "low"):
+                return f"Error: Invalid priority '{priority}'. Must be high, medium, or low."
+
+            # Validate parent_id if provided
+            all_todos = load_todos(working_dir)
+            if parent_id:
+                parent_exists = any(t.id == parent_id for t in all_todos)
+                if not parent_exists:
+                    return f"Error: Parent task '{parent_id}' not found."
+
+            # Create the todo item
+            new_todo = TodoItem(
+                id=task_id,
+                content=content,
+                status="pending",
+                priority=priority,
+                parent_id=parent_id,
+                is_complex=is_complex,
+            )
+
+            # Insert
+            success, message, updated_todos = insert_todo(
+                new_todo, all_todos, insert_position, working_dir
+            )
+
+            if not success:
+                return f"Error: {message}"
+
+            # Format output
+            summary = format_todo_summary(updated_todos)
+            next_todo = get_next_actionable(updated_todos)
+
+            output = [
+                f"Inserted: {content} (id: {task_id}, priority: {priority})",
+                "",
+                summary,
+            ]
+
+            if next_todo:
+                output.append(f"Next task: {next_todo.content} (id: {next_todo.id})")
+
+            return "\n".join(output)
+
+        except Exception as e:
+            return f"Error inserting task: {e}"
+
+    @tool
+    def delete_task(task_id: str) -> str:
+        """Delete a single task from the todo list.
+
+        Use this to remove tasks that are no longer needed.
+
+        IMPORTANT: Cannot delete a task that has children (subtasks).
+        You must delete all children first before deleting the parent.
+
+        Args:
+            task_id: ID of the task to delete
+
+        Returns:
+            Confirmation with updated task list
+        """
+        try:
+            all_todos = load_todos(working_dir)
+
+            if not all_todos:
+                return f"Error: No todos found. Task '{task_id}' does not exist."
+
+            # Delete
+            success, message, updated_todos = delete_todo(
+                task_id, all_todos, working_dir
+            )
+
+            if not success:
+                return f"Error: {message}"
+
+            # Format output
+            if updated_todos:
+                summary = format_todo_summary(updated_todos)
+                next_todo = get_next_actionable(updated_todos)
+
+                output = [
+                    f"Deleted: {task_id}",
+                    "",
+                    summary,
+                ]
+
+                if next_todo:
+                    output.append(f"Next task: {next_todo.content} (id: {next_todo.id})")
+
+                return "\n".join(output)
+            else:
+                return f"Deleted: {task_id}\n\nNo todos remaining."
+
+        except Exception as e:
+            return f"Error deleting task: {e}"
+
+    return [write_todos, read_todos, complete_task, update_todo, insert_task, delete_task]

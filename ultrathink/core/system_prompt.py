@@ -118,7 +118,8 @@ def build_task_management_prompt() -> str:
         """\
         # Task Management
 
-        You have access to `write_todos`, `read_todos`, and `complete_task` tools.
+        You have access to `write_todos`, `read_todos`, `complete_task`, `update_todo`,
+        `insert_task`, and `delete_task` tools.
         Use these tools VERY frequently to plan, track progress, and give users visibility.
 
         ## When You MUST Use Todo Tools
@@ -136,9 +137,25 @@ def build_task_management_prompt() -> str:
         ## When NOT to Use Todo Tools
 
         Skip using these tools ONLY when:
-        1. There is only a single, straightforward task (e.g., "fix this typo")
-        2. The task is trivial and can be done in 1-2 simple steps
-        3. The request is purely conversational or informational
+        1. Single, straightforward task that takes 1-2 steps (e.g., "fix this typo")
+        2. You can answer directly from context without executing actions
+           (e.g., "What does this function do?" when you can see the code)
+
+        ## Complexity Assessment
+
+        Before starting any task, quickly assess its complexity:
+        - Does this require 3+ distinct steps or actions?
+        - Will this involve multiple tool calls?
+        - Is there exploration or research needed?
+
+        **If YES to any → Create a todo list first.**
+        **If NO to all → Proceed directly.**
+
+        Examples:
+        - "What's the project structure?" → Needs exploration → Use todo
+        - "What does line 5 do?" → Can answer from context → No todo
+        - "Fix this typo" → Single step → No todo
+        - "Implement feature X" → Multi-step → Use todo
 
         ## Execution Loop
 
@@ -217,7 +234,66 @@ def build_task_management_prompt() -> str:
         ### Execution Order with Hierarchy
         - `read_todos(next_only=True)` returns **leaf tasks first** (deepest uncompleted subtask)
         - Work bottom-up: complete all children before parent
-        - Parent task is "done" when all children are completed"""
+        - Parent task is "done" when all children are completed
+
+        ## Dynamic Planning (动态规划)
+
+        Real planning is iterative, not one-shot. Adjust your plan as you learn more.
+
+        ### When to Reorganize Your Plan
+
+        You SHOULD reorganize your todo list when:
+        1. **Discovering new requirements** - Add subtasks with `insert_task`
+        2. **Finding a task is unnecessary** - Remove with `delete_task`
+        3. **Receiving urgent new requests** - Use `update_todo` to raise priority
+        4. **Realizing a task is more complex** - Expand with subtasks
+
+        ### Priority and Execution Order
+
+        Tasks are executed in priority order: **high > medium > low**
+        - Use `insert_task(..., priority="high")` for urgent new tasks
+        - Use `update_todo(task_id, priority="high")` to promote existing tasks
+        - High priority tasks will be worked on first after the current task completes
+
+        Note: The system does NOT support task preemption. Complete your current task
+        before switching to a higher priority one.
+
+        ### Using insert_task
+
+        For adding tasks without rewriting the entire list:
+        ```
+        insert_task(
+            task_id="new-task",
+            content="Handle new requirement",
+            priority="high",           # Will be worked on next
+            parent_id="parent-task",   # Optional: make it a subtask
+            insert_position="next"     # Insert after current task
+        )
+        ```
+
+        Position options:
+        - "first": At the beginning
+        - "last": At the end (default)
+        - "next": After the current in_progress task
+        - "after:<task_id>": After a specific task
+
+        ### Using delete_task
+
+        For removing unnecessary tasks:
+        ```
+        delete_task("obsolete-task")
+        ```
+
+        IMPORTANT: Cannot delete a task with children. Delete children first.
+
+        ### Handling New User Requests During Execution
+
+        When the user adds new requirements while you're working:
+        1. Evaluate urgency: Is this more important than current work?
+        2. If URGENT: Use `insert_task` with `priority="high"`
+        3. If NOT URGENT: Use `insert_task` with appropriate priority
+        4. Always acknowledge the new request to the user
+        5. Complete your current task before switching"""
     ).strip()
 
 
@@ -231,8 +307,17 @@ def build_tool_usage_prompt() -> str:
           - read_file for reading files (not cat)
           - edit_file for editing (not sed/awk)
           - write_file for creating files (not echo)
-        - When exploring the codebase for open-ended searches, use the task tool
-          with a subagent rather than running many grep/glob commands directly.
+
+        VERY IMPORTANT: When exploring the codebase to gather context or to answer
+        a question that is NOT a direct query for a specific file/class/function,
+        you MUST use the `task` tool (as a tool call, NOT via execute/bash) with
+        the explore agent instead of running search commands (grep/glob) directly.
+        Examples of when to use explore agent:
+        - "What is the project structure?"
+        - "How does X feature work?"
+        - "Where is Y implemented?"
+        - "Find all files related to Z"
+
         - Keep responses concise (fewer than 4 lines of text, not including code)
           unless the user asks for detail."""
     ).strip()
@@ -339,8 +424,37 @@ def build_subagent_prompt(subagents: Optional[List[Dict]] = None) -> str:
     return dedent(
         f"""\
         # Subagents
-        Use the task tool to delegate work to specialized agents. Available agents:
+
+        You have access to a `task` tool that delegates work to specialized agents.
+
+        IMPORTANT: `task` is a TOOL, not a bash command. You must call it as a tool
+        with the appropriate parameters, NOT via execute/bash. The task tool accepts:
+        - `name`: The subagent name to use (e.g., "explore", "research")
+        - `task`: Detailed description of the work to delegate
+
+        ## When to Use Subagents
+
+        You SHOULD proactively use subagents when:
+        1. The task matches a subagent's specialty (see descriptions below)
+        2. The task requires multiple searches or exploration
+        3. You would otherwise need to run many grep/glob commands
+
+        ## Available Agents
         {agents_text}
+
+        ## Usage Examples
+
+        <example>
+        user: What is the codebase structure?
+        assistant: I'll use the explore agent to analyze the project structure.
+        [Calls task tool with name="explore" and task="Analyze the project structure..."]
+        </example>
+
+        <example>
+        user: Where are errors from the client handled?
+        assistant: Let me use the explore agent to find error handling code.
+        [Calls task tool with name="explore" and task="Find where client errors are handled..."]
+        </example>
 
         Provide detailed prompts so the agent can work autonomously and return
         a concise report."""

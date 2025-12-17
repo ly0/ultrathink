@@ -143,23 +143,34 @@ def clear_todos(project_root: Optional[Path] = None) -> None:
     save_todos([], project_root)
 
 
-def get_next_actionable(todos: Sequence[TodoItem]) -> Optional[TodoItem]:
-    """Return the next todo to work on (in_progress first, then pending).
+PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
+
+def get_next_actionable(todos: Sequence[TodoItem]) -> Optional[TodoItem]:
+    """Return the next todo to work on, considering priority.
+
+    Priority order: high > medium > low.
+    Within same priority, prefers in_progress over pending.
     For hierarchical todos, prefers leaf tasks (those without pending children).
     """
     for status in ("in_progress", "pending"):
-        for todo in todos:
-            if todo.status == status:
-                # If this task has pending children, skip it and work on children first
-                children = get_children(todo.id, todos)
-                pending_children = [c for c in children if c.status in ("pending", "in_progress")]
-                if pending_children:
-                    # Recursively find actionable child
-                    child_actionable = get_next_actionable(pending_children)
-                    if child_actionable:
-                        return child_actionable
-                return todo
+        candidates = [t for t in todos if t.status == status]
+        if not candidates:
+            continue
+
+        # Sort by priority (high > medium > low)
+        candidates.sort(key=lambda t: PRIORITY_ORDER.get(t.priority, 1))
+
+        for todo in candidates:
+            # If this task has pending children, skip it and work on children first
+            children = get_children(todo.id, todos)
+            pending_children = [c for c in children if c.status in ("pending", "in_progress")]
+            if pending_children:
+                # Recursively find actionable child (considering priority)
+                child_actionable = get_next_actionable(pending_children)
+                if child_actionable:
+                    return child_actionable
+            return todo
     return None
 
 
@@ -198,6 +209,114 @@ def should_reflect(task: TodoItem, todos: Sequence[TodoItem]) -> bool:
     if has_children(task.id, todos):
         return True
     return False
+
+
+def insert_todo(
+    todo: TodoItem,
+    todos: List[TodoItem],
+    position: str = "last",
+    project_root: Optional[Path] = None,
+) -> Tuple[bool, str, List[TodoItem]]:
+    """Insert a single todo at the specified position.
+
+    Args:
+        todo: The TodoItem to insert
+        todos: Current list of todos
+        position: Where to insert - "first", "last", "next", or "after:<task_id>"
+        project_root: Project root for storage
+
+    Returns:
+        Tuple of (success, message, updated_todos)
+    """
+    # Check for duplicate ID
+    existing_ids = {t.id for t in todos}
+    if todo.id in existing_ids:
+        return False, f"Task ID '{todo.id}' already exists.", todos
+
+    # Set timestamps
+    now = time.time()
+    todo = todo.model_copy(update={"created_at": now, "updated_at": now})
+
+    # Determine insert position
+    if position == "first":
+        insert_index = 0
+    elif position == "last":
+        insert_index = len(todos)
+    elif position == "next":
+        # Insert after the current in_progress task, or at the end
+        in_progress_idx = None
+        for i, t in enumerate(todos):
+            if t.status == "in_progress":
+                in_progress_idx = i
+                break
+        insert_index = (in_progress_idx + 1) if in_progress_idx is not None else len(todos)
+    elif position.startswith("after:"):
+        target_id = position[6:]
+        target_idx = None
+        for i, t in enumerate(todos):
+            if t.id == target_id:
+                target_idx = i
+                break
+        if target_idx is None:
+            return False, f"Target task '{target_id}' not found.", todos
+        insert_index = target_idx + 1
+    else:
+        return False, f"Invalid position '{position}'. Use first, last, next, or after:<task_id>.", todos
+
+    # Insert the todo
+    new_todos = list(todos)
+    new_todos.insert(insert_index, todo)
+
+    # Validate
+    ok, message = validate_todos(new_todos)
+    if not ok:
+        return False, message or "Validation failed.", todos
+
+    # Save
+    save_todos(new_todos, project_root)
+    return True, f"Task '{todo.id}' inserted successfully.", new_todos
+
+
+def delete_todo(
+    task_id: str,
+    todos: List[TodoItem],
+    project_root: Optional[Path] = None,
+) -> Tuple[bool, str, List[TodoItem]]:
+    """Delete a single todo by ID.
+
+    Args:
+        task_id: ID of the task to delete
+        todos: Current list of todos
+        project_root: Project root for storage
+
+    Returns:
+        Tuple of (success, message, updated_todos)
+
+    Note:
+        Cannot delete a task that has children. Must delete children first.
+    """
+    # Find the task
+    task_index = None
+    for i, t in enumerate(todos):
+        if t.id == task_id:
+            task_index = i
+            break
+
+    if task_index is None:
+        return False, f"Task '{task_id}' not found.", todos
+
+    # Check for children
+    if has_children(task_id, todos):
+        children = get_children(task_id, todos)
+        child_ids = [c.id for c in children]
+        return False, f"Cannot delete task '{task_id}' because it has children: {child_ids}. Delete children first.", todos
+
+    # Remove the task
+    new_todos = [t for t in todos if t.id != task_id]
+
+    # Save
+    save_todos(new_todos, project_root)
+    return True, f"Task '{task_id}' deleted successfully.", new_todos
 
 
 def summarize_todos(todos: Sequence[TodoItem]) -> dict:

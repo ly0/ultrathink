@@ -10,6 +10,7 @@ from langchain_core.tools import BaseTool
 
 from ultrathink.tools.ask_user import create_ask_user_tool, create_ask_user_multi_tool
 from ultrathink.tools.filesystem import create_filesystem_tools
+from ultrathink.tools.task_tool import create_task_tool
 from ultrathink.tools.todo_tool import create_todo_tools
 
 
@@ -54,4 +55,4 @@ def get_custom_tools(
     return tools
 
 
-__all__ = ["get_custom_tools", "create_filesystem_tools", "create_todo_tools"]
+__all__ = ["get_custom_tools", "create_filesystem_tools", "create_task_tool", "create_todo_tools"]
