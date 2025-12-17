@@ -27,6 +27,8 @@ class SubagentDefinition:
         tools: List of tool names available to this subagent
         model: Optional model override
         location: Where this definition came from
+        read_only: Whether this subagent only reads (no file modifications).
+                   Read-only subagents can be executed in parallel.
     """
 
     name: str
@@ -35,6 +37,7 @@ class SubagentDefinition:
     tools: List[str] = field(default_factory=list)
     model: Optional[str] = None
     location: AgentLocation = AgentLocation.BUILTIN
+    read_only: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format for deepagent."""
@@ -42,6 +45,7 @@ class SubagentDefinition:
             "name": self.name,
             "description": self.description,
             "system_prompt": self.system_prompt,
+            "read_only": self.read_only,
         }
         if self.tools:
             result["tools"] = self.tools
@@ -119,6 +123,7 @@ NOTE: You are meant to be a fast agent that returns output as quickly as possibl
 
 Complete the user's search request efficiently and report your findings clearly.""",
     tools=["glob", "grep", "read_file", "ls"],
+    read_only=True,  # Only reads files, can be executed in parallel
 )
 
 RESEARCH_AGENT = SubagentDefinition(
@@ -164,6 +169,7 @@ Provide feedback in this format:
 
 Reference specific line numbers when possible.""",
     tools=["read_file", "grep", "glob"],
+    read_only=True,  # Only reads files, can be executed in parallel
 )
 
 REFACTOR_AGENT = SubagentDefinition(

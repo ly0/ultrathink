@@ -425,12 +425,38 @@ def build_subagent_prompt(subagents: Optional[List[Dict]] = None) -> str:
         f"""\
         # Subagents
 
-        You have access to a `task` tool that delegates work to specialized agents.
+        You have access to the `task` tool for delegating work to specialized agents.
+
+        ## `task` Tool
 
         IMPORTANT: `task` is a TOOL, not a bash command. You must call it as a tool
         with the appropriate parameters, NOT via execute/bash. The task tool accepts:
         - `name`: The subagent name to use (e.g., "explore", "research")
         - `task`: Detailed description of the work to delegate
+
+        ## Parallel Execution (Automatic)
+
+        **Read-only subagents (explore, code-review) support automatic parallel execution.**
+
+        When you need to run multiple INDEPENDENT tasks with read-only agents,
+        you can return multiple `task` tool calls in a single response.
+        The system will automatically execute them in parallel.
+
+        Example - Multiple task calls in one response:
+        ```
+        [Task 1: task(name="explore", task="Find all API endpoints")]
+        [Task 2: task(name="explore", task="Find error handling code")]
+        ```
+
+        **When to use multiple task calls:**
+        - Multiple independent exploration or analysis tasks
+        - Gathering information from different parts of the codebase
+        - Speeding up research by parallelizing searches
+
+        **When to use single task calls:**
+        - Tasks depend on each other's results
+        - You need to process results sequentially
+        - Using write-capable subagents (refactor, test)
 
         ## When to Use Subagents
 
@@ -451,9 +477,9 @@ def build_subagent_prompt(subagents: Optional[List[Dict]] = None) -> str:
         </example>
 
         <example>
-        user: Where are errors from the client handled?
-        assistant: Let me use the explore agent to find error handling code.
-        [Calls task tool with name="explore" and task="Find where client errors are handled..."]
+        user: Find how authentication works and where errors are logged.
+        assistant: These are independent tasks with read-only agents, I'll call them together.
+        [Returns two task tool calls in the same response - they will run in parallel]
         </example>
 
         Provide detailed prompts so the agent can work autonomously and return

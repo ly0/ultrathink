@@ -28,7 +28,14 @@ from ultrathink.core.config import (
 )
 from ultrathink.core.session import ConversationSession
 from ultrathink.core.token_estimation import estimate_tokens
-from ultrathink.cli.ui.message_renderer import render_message, render_tool_use, render_error
+from ultrathink.cli.ui.message_renderer import (
+    render_message,
+    render_tool_use,
+    render_error,
+    render_subagent_thinking,
+    render_subagent_tool_use,
+    AGENT_COLORS,
+)
 from ultrathink.cli.ui.thinking_spinner import ThinkingSpinner
 from ultrathink.models.deepseek_reasoner import REASONING_CONTENT_KEY
 
@@ -185,6 +192,11 @@ class UltrathinkUI:
         self._should_exit = False
         self._context_tokens = 0  # Track current context token usage
         self._mcp_config: Optional[Dict[str, Any]] = None  # MCP server configuration
+        self._current_subagent: Optional[str] = None  # Track active subagent for UI prefix
+
+        # Set console for task tool subagent output
+        from ultrathink.tools.task_tool import set_task_console
+        set_task_console(self.console)
 
         # Set up prompt history
         history_path = Path.home() / ".ultrathink_history"
@@ -554,6 +566,25 @@ class UltrathinkUI:
                 elif event_type == "on_tool_start":
                     # Show accumulated thinking before tool call
                     spinner.stop()
+
+                    # Get tool info
+                    tool_name = event.get("name", "unknown")
+                    tool_input = event.get("data", {}).get("input", {})
+
+                    # Check if this is starting a subagent task
+                    if tool_name == "task" and isinstance(tool_input, dict):
+                        subagent_name = tool_input.get("name", "")
+                        if subagent_name:
+                            self._current_subagent = subagent_name
+
+                    # Skip rendering for subagent events - task_tool handles rendering
+                    if self._current_subagent and tool_name != "task":
+                        # Reset thinking content but don't render (task_tool will do it)
+                        thinking_content = ""
+                        spinner.start()
+                        continue
+
+                    # Render thinking for main agent
                     if thinking_content:
                         self.console.print()
                         self.console.print(Panel(
@@ -563,20 +594,28 @@ class UltrathinkUI:
                         ))
                         thinking_content = ""  # Reset for next round
 
-                    # Show tool call
-                    tool_name = event.get("name", "unknown")
-                    tool_input = event.get("data", {}).get("input", {})
+                    # Render tool call for main agent
                     render_tool_use(self.console, tool_name, tool_input, "call")
+
                     # Don't restart spinner for interactive tools
                     # They need the terminal for user input
                     if tool_name not in ("ask_user", "ask_user_multi"):
                         spinner.start()
 
                 elif event_type == "on_tool_end":
-                    # Show tool result
-                    spinner.stop()
                     tool_name = event.get("name", "unknown")
                     output = event.get("data", {}).get("output", "")
+
+                    # Check if subagent task ended
+                    if tool_name == "task":
+                        self._current_subagent = None
+
+                    # Skip rendering for subagent events - task_tool handles rendering
+                    if self._current_subagent and tool_name != "task":
+                        continue
+
+                    # Show tool result for main agent
+                    spinner.stop()
                     if self.verbose:
                         render_tool_use(self.console, tool_name, output, "result")
                     spinner.start()

@@ -16,6 +16,15 @@ from rich.text import Text
 # Todo tool names for special rendering
 TODO_TOOLS = {"write_todos", "read_todos", "update_todo", "complete_task"}
 
+# Subagent color mapping
+AGENT_COLORS = {
+    "explore": "magenta",
+    "research": "blue",
+    "code-review": "yellow",
+    "refactor": "green",
+    "test": "cyan",
+}
+
 
 def render_message(
     console: Console,
@@ -473,3 +482,98 @@ def render_progress(
     """
     percentage = (completed / total * 100) if total > 0 else 0
     console.print(f"[dim]{message}: {completed}/{total} ({percentage:.0f}%)[/dim]")
+
+
+def render_subagent_thinking(
+    console: Console,
+    content: str,
+    agent_name: str,
+    index: Optional[int] = None,
+) -> None:
+    """Render subagent thinking output with agent name prefix.
+
+    Args:
+        console: Rich console
+        content: Thinking content
+        agent_name: Name of the subagent
+        index: Optional index for parallel task identification
+    """
+    if not content.strip():
+        return
+
+    color = AGENT_COLORS.get(agent_name, "magenta")
+    # Use \[ to escape brackets so Rich doesn't interpret [agent_name] as a tag
+    if index is not None:
+        title = f"[{color}]\\[{agent_name}-{index}][/{color}] Thinking"
+    else:
+        title = f"[{color}]\\[{agent_name}][/{color}] Thinking"
+    console.print(Panel(
+        Text(content, style="dim italic"),
+        title=title,
+        border_style=color,
+    ))
+
+
+def render_subagent_tool_use(
+    console: Console,
+    tool_name: str,
+    data: Any,
+    event_type: str,
+    agent_name: str,
+    index: Optional[int] = None,
+) -> None:
+    """Render subagent tool call with agent name prefix.
+
+    Args:
+        console: Rich console
+        tool_name: Name of the tool
+        data: Tool input or output data
+        event_type: "call" or "result"
+        agent_name: Name of the subagent
+        index: Optional index for parallel task identification
+    """
+    color = AGENT_COLORS.get(agent_name, "magenta")
+
+    # Build agent label with optional index
+    if index is not None:
+        agent_label = f"{agent_name}-{index}"
+    else:
+        agent_label = agent_name
+
+    if event_type == "call":
+        # Use \[ to escape brackets so Rich doesn't interpret [agent_name] as a tag
+        title = f"[{color}]\\[{agent_label}][/{color}] Tool: {tool_name}"
+
+        # Format input data
+        if isinstance(data, dict):
+            lines = []
+            for key, value in data.items():
+                value_str = str(value)
+                if len(value_str) > 100:
+                    value_str = value_str[:100] + "..."
+                lines.append(f"  {key}: {value_str}")
+            content = "\n".join(lines) if lines else "(no input)"
+        else:
+            content = str(data) if data else "(no input)"
+
+        console.print(Panel(
+            content,
+            title=title,
+            border_style=color,
+            padding=(0, 1),
+        ))
+
+    elif event_type == "result":
+        content = str(data) if data else "(no output)"
+
+        if len(content) > 500:
+            content = content[:500] + f"\n... ({len(content) - 500} more characters)"
+
+        # Use \[ to escape brackets so Rich doesn't interpret [agent_name] as a tag
+        title = f"[dim]\\[{agent_label}] Result: {tool_name}[/dim]"
+        console.print(Panel(
+            Text(content, style="dim"),
+            title=title,
+            border_style="dim",
+            padding=(0, 1),
+        ))

@@ -147,6 +147,8 @@ async def create_ultrathink_agent(
     base_url: Optional[str] = None,
     ui_callback: Optional[Callable] = None,
     ui_multi_callback: Optional[Callable] = None,
+    recursion_limit: Optional[int] = None,
+    max_message_window: Optional[int] = None,
     **kwargs: Any,
 ) -> Any:
     """Create a configured Ultrathink agent.
@@ -165,6 +167,8 @@ async def create_ultrathink_agent(
         base_url: Custom API base URL
         ui_callback: Callback function for user interaction (for ask_user tool)
         ui_multi_callback: Callback function for multi-question interaction (for ask_user_multi tool)
+        recursion_limit: Maximum recursion depth for agent (default: 10000 for main, 50 for subagents)
+        max_message_window: Maximum messages to keep in context window (for subagents, prevents context overflow)
         **kwargs: Additional arguments passed to create_deep_agent
 
     Returns:
@@ -199,6 +203,7 @@ async def create_ultrathink_agent(
     all_tools.extend(custom_tools)
 
     # Add task tool for subagent delegation
+    # Note: parallel execution is handled by the parallel executor based on read_only attribute
     if all_subagents:
         from ultrathink.tools.task_tool import create_task_tool
 
@@ -209,6 +214,7 @@ async def create_ultrathink_agent(
             verbose=verbose,
         )
         all_tools.append(task_tool)
+
         if verbose:
             print(f"Added task tool with {len(all_subagents)} subagent(s)")
 
@@ -279,6 +285,8 @@ async def create_ultrathink_agent(
             model=llm,
             tools=all_tools,
             system_prompt=system_prompt,
+            recursion_limit=recursion_limit,
+            max_message_window=max_message_window,
         )
 
     # Use deepagents for other models
@@ -311,34 +319,145 @@ async def _create_langgraph_agent(
     model: BaseChatModel,
     tools: List[BaseTool],
     system_prompt: str,
+    recursion_limit: Optional[int] = None,
+    max_message_window: Optional[int] = None,
+    use_parallel_tools: bool = True,
 ) -> Any:
-    """Create a langgraph-based agent for DeepSeek Reasoner.
+    """Create a langgraph-based agent with parallel tool execution support.
 
-    This is used instead of deepagents for DeepSeek Reasoner because
-    deepagents' tools have schema issues with Callable types.
+    This builds a custom ReAct agent that uses ParallelToolNode to execute
+    read-only tool calls in parallel while keeping write operations sequential.
 
     Args:
         model: The chat model
         tools: Tools to provide
         system_prompt: System prompt
+        recursion_limit: Maximum recursion depth (default: 10000 for main agents)
+        max_message_window: Maximum number of recent messages to keep (for subagents)
+        use_parallel_tools: Whether to use ParallelToolNode (default True for main agents)
 
     Returns:
         Langgraph agent
     """
-    from langgraph.prebuilt import create_react_agent
-    from langchain_core.messages import SystemMessage
+    from typing import Annotated, TypedDict, Sequence
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage, BaseMessage
+    from langgraph.graph import StateGraph, END
+    from langgraph.graph.message import add_messages
 
-    # Create agent with system prompt and higher recursion limit
-    agent = create_react_agent(
-        model,
-        tools,
-        prompt=SystemMessage(content=system_prompt),
+    from ultrathink.core.parallel_executor import ParallelToolNode
+
+    # Define state schema
+    class AgentState(TypedDict):
+        messages: Annotated[Sequence[BaseMessage], add_messages]
+
+    # Bind tools to model
+    model_with_tools = model.bind_tools(tools)
+
+    # Create the tool node (parallel or standard based on flag)
+    if use_parallel_tools:
+        tool_node = ParallelToolNode(tools)
+    else:
+        from langgraph.prebuilt import ToolNode
+        tool_node = ToolNode(tools)
+
+    # Define the agent node that calls the model
+    async def agent_node(state: AgentState) -> dict:
+        """Call the model with current messages."""
+        messages = list(state["messages"])
+
+        # Apply message window trimming if configured
+        if max_message_window is not None and max_message_window > 0:
+            messages = _trim_messages(messages, max_message_window)
+
+        # Prepend system message
+        full_messages = [SystemMessage(content=system_prompt)] + messages
+
+        response = await model_with_tools.ainvoke(full_messages)
+        return {"messages": [response]}
+
+    # Define routing logic
+    def should_continue(state: AgentState) -> str:
+        """Determine if we should call tools or end."""
+        messages = state["messages"]
+        last_message = messages[-1]
+
+        # If the model made tool calls, route to tools
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+        # Otherwise, end
+        return END
+
+    # Build the graph
+    workflow = StateGraph(AgentState)
+
+    # Add nodes
+    workflow.add_node("agent", agent_node)
+    workflow.add_node("tools", tool_node)
+
+    # Set entry point
+    workflow.set_entry_point("agent")
+
+    # Add edges
+    workflow.add_conditional_edges(
+        "agent",
+        should_continue,
+        {
+            "tools": "tools",
+            END: END,
+        }
     )
+    workflow.add_edge("tools", "agent")
 
-    # Return a wrapper that sets higher recursion limit
-    # Set a very high recursion limit - effectively unlimited for practical purposes
-    # Each "recursion" is roughly one model call + tool execution
-    return _AgentWithConfig(agent, recursion_limit=10000)
+    # Compile the graph
+    agent = workflow.compile()
+
+    # Use provided recursion limit or default to 10000
+    effective_limit = recursion_limit if recursion_limit is not None else 10000
+    return _AgentWithConfig(agent, recursion_limit=effective_limit)
+
+
+def _trim_messages(
+    messages: List[Any],
+    max_window: int,
+) -> List[Any]:
+    """Trim messages to keep only recent ones while preserving context.
+
+    Keeps:
+    - First human message (original task)
+    - Last N messages (tool calls and responses)
+    """
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+    if len(messages) <= max_window + 1:
+        # No trimming needed (+1 for first human message)
+        return messages
+
+    # Always keep first human message
+    preserved = []
+    first_human_idx = None
+
+    for i, msg in enumerate(messages):
+        if isinstance(msg, HumanMessage) and first_human_idx is None:
+            preserved.append(msg)
+            first_human_idx = i
+            break
+
+    if first_human_idx is None:
+        # No human message found, just keep last N
+        return messages[-max_window:]
+
+    # Keep the last N messages (after first human message)
+    remaining_messages = messages[first_human_idx + 1:]
+    if len(remaining_messages) > max_window:
+        # Add a summary message to indicate trimming occurred
+        trimmed_count = len(remaining_messages) - max_window
+        summary_msg = AIMessage(content=f"[Context trimmed: {trimmed_count} earlier messages removed to maintain focus]")
+        preserved.append(summary_msg)
+        preserved.extend(remaining_messages[-max_window:])
+    else:
+        preserved.extend(remaining_messages)
+
+    return preserved
 
 
 class _AgentWithConfig:
