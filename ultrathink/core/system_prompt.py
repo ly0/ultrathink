@@ -119,7 +119,7 @@ def build_task_management_prompt() -> str:
         # Task Management
 
         You have access to `write_todos`, `read_todos`, `complete_task`, `update_todo`,
-        `insert_task`, and `delete_task` tools.
+        `insert_task`, `delete_task`, and `review_todos` tools.
         Use these tools VERY frequently to plan, track progress, and give users visibility.
 
         ## When You MUST Use Todo Tools
@@ -191,6 +191,39 @@ def build_task_management_prompt() -> str:
         - Mark tasks complete IMMEDIATELY after finishing (never batch)
         - Only ONE task should be `in_progress` at a time
         - If unsure whether to use todos, USE THEM - it's better to over-plan
+
+        ## Proactive Task Management
+
+        The system will prompt you to reflect and refine your plan at key moments.
+        Pay attention to these prompts and act on them.
+
+        ### When Starting a Task (Refinement Check)
+        When you mark a task as `in_progress`, you'll receive a prompt asking:
+        "Does this task need to be broken down?"
+
+        If the answer is YES (task has 3+ steps):
+        1. Use `insert_task` to add subtasks BEFORE proceeding
+        2. Set `parent_id` to link subtasks to the parent
+        3. Then continue with the first subtask
+
+        ### Periodic Review (Every 3 Tasks)
+        After completing every 3 tasks, you'll receive a review prompt.
+        When you see this:
+        1. Use `review_todos()` to analyze your current plan
+        2. Check if remaining tasks are still relevant
+        3. Adjust priorities or add/remove tasks as needed
+        4. Only then continue with the next task
+
+        ### Using review_todos
+        This tool provides an analysis of your todo list:
+        - Shows tasks that may need breakdown
+        - Highlights high priority items
+        - Prompts you with review questions
+
+        Use it when:
+        - The system prompts you to review
+        - You feel uncertain about your plan
+        - Significant time has passed since initial planning
 
         ## Hierarchical Tasks (层级任务)
 
@@ -308,15 +341,20 @@ def build_tool_usage_prompt() -> str:
           - edit_file for editing (not sed/awk)
           - write_file for creating files (not echo)
 
-        VERY IMPORTANT: When exploring the codebase to gather context or to answer
-        a question that is NOT a direct query for a specific file/class/function,
-        you MUST use the `task` tool (as a tool call, NOT via execute/bash) with
-        the explore agent instead of running search commands (grep/glob) directly.
-        Examples of when to use explore agent:
-        - "What is the project structure?"
-        - "How does X feature work?"
-        - "Where is Y implemented?"
-        - "Find all files related to Z"
+        When exploring the codebase for code-related questions, consider using the
+        `task` tool with the explore agent instead of running search commands directly.
+
+        Use explore agent when:
+        - User asks about project structure or codebase organization
+        - User wants to understand how a feature is implemented
+        - User asks to find files related to a specific topic
+        - The question is clearly about THIS codebase
+
+        Do NOT use explore agent when:
+        - User is discussing external content (web articles, documentation, etc.)
+        - User asks a follow-up question about a topic you were just discussing
+        - The question is general knowledge, not codebase-specific
+        - User is asking for your opinion or analysis of previously discussed content
 
         - Keep responses concise (fewer than 4 lines of text, not including code)
           unless the user asks for detail."""
@@ -327,6 +365,16 @@ def build_doing_tasks_prompt() -> str:
     """Build instructions for doing software engineering tasks."""
     return dedent(
         """\
+        # Conversation Context Awareness
+        When responding to user questions:
+        - First consider the conversation context - what topic were you just discussing?
+        - If discussing non-code content (web articles, external docs, general topics),
+          follow-up questions likely relate to that discussion, not the codebase
+        - Only trigger codebase exploration when the user explicitly asks about code
+          or the question clearly requires searching the local repository
+        - When in doubt, ask the user for clarification rather than assuming they
+          want code exploration
+
         # Doing tasks
         The user will primarily request software engineering tasks. For these:
         - **FIRST**: If the task has 3+ steps, use `write_todos` to plan BEFORE doing anything
@@ -460,10 +508,13 @@ def build_subagent_prompt(subagents: Optional[List[Dict]] = None) -> str:
 
         ## When to Use Subagents
 
-        You SHOULD proactively use subagents when:
+        Consider using subagents when the user's question is clearly about the codebase and:
         1. The task matches a subagent's specialty (see descriptions below)
         2. The task requires multiple searches or exploration
         3. You would otherwise need to run many grep/glob commands
+
+        Do NOT use subagents when the user is discussing non-code topics or asking
+        follow-up questions about content you were just discussing.
 
         ## Available Agents
         {agents_text}

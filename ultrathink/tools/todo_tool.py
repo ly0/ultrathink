@@ -11,6 +11,7 @@ from langchain_core.tools import tool
 
 from ultrathink.utils.todo import (
     TodoItem,
+    analyze_todos,
     delete_todo,
     format_todo_lines,
     format_todo_summary,
@@ -276,6 +277,24 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
                     "Use write_todos to update the plan if needed.",
                 ])
 
+            # Periodic review reminder (every 3 completed tasks)
+            completed_count = stats["by_status"]["completed"]
+            if (
+                completed_count > 0
+                and completed_count % 3 == 0
+                and not needs_reflection  # Don't stack with complex task reflection
+            ):
+                output.extend([
+                    "",
+                    "--- Periodic Review ---",
+                    f"You've completed {completed_count} tasks. Take a moment to review:",
+                    "1. Is the remaining plan still valid?",
+                    "2. Have priorities changed based on what you've learned?",
+                    "3. Are there tasks that should be added or removed?",
+                    "",
+                    "Use read_todos(with_reflection=True) to review the full list.",
+                ])
+
             return "\n".join(output)
 
         except Exception as e:
@@ -352,12 +371,31 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
             save_todos(all_todos, working_dir)
 
             updated_task = all_todos[task_index]
-            return (
-                f"Updated task '{task_id}':\n"
-                f"  content: {updated_task.content}\n"
-                f"  status: {updated_task.status}\n"
-                f"  priority: {updated_task.priority}"
-            )
+            output = [
+                f"Updated task '{task_id}':",
+                f"  content: {updated_task.content}",
+                f"  status: {updated_task.status}",
+                f"  priority: {updated_task.priority}",
+            ]
+
+            # Add start-time refinement prompt when transitioning to in_progress
+            if (
+                status == "in_progress"
+                and task.status == "pending"
+                and not has_children(task_id, all_todos)
+            ):
+                output.extend([
+                    "",
+                    "--- Before Starting ---",
+                    "Consider whether this task needs to be broken down:",
+                    "1. Does this task have 3+ distinct steps?",
+                    "2. Would subtasks help track progress better?",
+                    "3. Are there dependencies that should be separate tasks?",
+                    "",
+                    "If yes, use insert_task to add subtasks before proceeding.",
+                ])
+
+            return "\n".join(output)
 
         except Exception as e:
             return f"Error updating todo: {e}"
@@ -490,4 +528,75 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
         except Exception as e:
             return f"Error deleting task: {e}"
 
-    return [write_todos, read_todos, complete_task, update_todo, insert_task, delete_task]
+    @tool
+    def review_todos() -> str:
+        """Actively review and analyze the current todo list.
+
+        Use this tool periodically to:
+        - Check if the plan is still on track
+        - Identify tasks that may need expansion into subtasks
+        - Spot potential issues or blockers
+
+        This is useful when:
+        - You've completed several tasks and want to reassess the plan
+        - You're unsure if remaining tasks are still relevant
+        - The system prompts you to review after completing 3 tasks
+
+        Returns:
+            Analysis with current status and suggestions for plan adjustments
+        """
+        try:
+            all_todos = load_todos(working_dir)
+
+            if not all_todos:
+                return "No todos stored yet. Use write_todos to create tasks."
+
+            # Get statistics
+            stats = summarize_todos(all_todos)
+            analysis = analyze_todos(all_todos)
+
+            output = [
+                "=== Todo List Review ===",
+                "",
+                f"Progress: {stats['by_status']['completed']}/{stats['total']} completed",
+                f"Status: {stats['by_status']['pending']} pending, {stats['by_status']['in_progress']} in progress",
+                "",
+            ]
+
+            # Current task
+            in_progress = [t for t in all_todos if t.status == "in_progress"]
+            if in_progress:
+                output.append(f"Currently working on: {in_progress[0].content}")
+                output.append("")
+
+            # Tasks that may need breakdown
+            possibly_complex = analysis.get("possibly_complex", [])
+            if possibly_complex:
+                output.append("Tasks that may need breakdown:")
+                for task in possibly_complex:
+                    output.append(f"  - {task.content} (id: {task.id})")
+                output.append("")
+
+            # High priority pending
+            high_priority = analysis.get("high_priority_pending", [])
+            if high_priority:
+                output.append(f"High priority tasks remaining: {len(high_priority)}")
+                output.append("")
+
+            # Review questions
+            output.extend([
+                "--- Review Questions ---",
+                "1. Are the remaining tasks still relevant to the goal?",
+                "2. Do any pending tasks need to be expanded into subtasks?",
+                "3. Should any task priorities be adjusted?",
+                "4. Have you discovered tasks that should be added?",
+                "",
+                "Use insert_task, delete_task, or update_todo to adjust the plan.",
+            ])
+
+            return "\n".join(output)
+
+        except Exception as e:
+            return f"Error reviewing todos: {e}"
+
+    return [write_todos, read_todos, complete_task, update_todo, insert_task, delete_task, review_todos]

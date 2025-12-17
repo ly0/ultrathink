@@ -336,6 +336,26 @@ def summarize_todos(todos: Sequence[TodoItem]) -> dict:
     }
 
 
+def analyze_todos(todos: Sequence[TodoItem]) -> dict:
+    """Analyze todos for potential issues and suggestions.
+
+    Returns:
+        Dict with:
+        - possibly_complex: Tasks that may need breakdown (no children, top-level)
+        - high_priority_pending: High priority tasks still pending
+    """
+    pending = [t for t in todos if t.status == "pending"]
+    # Find tasks that may need breakdown (no parent, no children)
+    possibly_complex = [
+        t for t in pending
+        if not t.parent_id and not has_children(t.id, todos)
+    ]
+    return {
+        "possibly_complex": possibly_complex[:3],  # Return at most 3
+        "high_priority_pending": [t for t in pending if t.priority == "high"],
+    }
+
+
 def format_todo_summary(todos: Sequence[TodoItem]) -> str:
     """Create a concise summary string for use in tool outputs."""
     stats = summarize_todos(todos)
