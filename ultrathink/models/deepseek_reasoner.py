@@ -134,15 +134,17 @@ class ChatDeepSeekReasoner(BaseChatModel):
                 }
 
                 # Check if we need to include reasoning_content
-                # Only include if:
+                # Include reasoning_content if:
                 # 1. It's not a new turn (we're in a tool call loop)
                 # 2. The message has tool_calls (reasoning is part of this step)
-                # 3. There are more messages after this (tool results pending)
-                has_more_messages = i < len(messages) - 1
+                # Note: We removed the has_more_messages condition because:
+                # - In multi-round tool calls, the last AI message also needs reasoning_content
+                # - DeepSeek API requires reasoning_content in ALL assistant messages with tool_calls
+                #   during a tool call loop, not just those with pending results
                 has_tool_calls = bool(msg.tool_calls)
 
                 reasoning = msg.additional_kwargs.get(REASONING_CONTENT_KEY)
-                if reasoning and has_tool_calls and has_more_messages and not is_new_turn:
+                if reasoning and has_tool_calls and not is_new_turn:
                     api_msg["reasoning_content"] = reasoning
 
                 # Handle tool calls
