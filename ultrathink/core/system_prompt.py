@@ -119,7 +119,7 @@ def build_task_management_prompt() -> str:
         # Task Management
 
         You have access to `write_todos`, `read_todos`, `complete_task`, `update_todo`,
-        `insert_task`, `delete_task`, and `review_todos` tools.
+        `insert_task`, `delete_task`, `review_todos`, and `start_parallel_tasks` tools.
         Use these tools VERY frequently to plan, track progress, and give users visibility.
 
         ## When You MUST Use Todo Tools
@@ -189,7 +189,8 @@ def build_task_management_prompt() -> str:
         ## Important Rules
         - You MUST use todos for tasks with 3+ steps - this is NOT optional
         - Mark tasks complete IMMEDIATELY after finishing (never batch)
-        - Only ONE task should be `in_progress` at a time
+        - Only ONE task should be `in_progress` at a time (unless using parallel execution)
+        - For parallel tasks, use `start_parallel_tasks` or set same `parallel_group`
         - If unsure whether to use todos, USE THEM - it's better to over-plan
 
         ## Proactive Task Management
@@ -344,7 +345,72 @@ def build_task_management_prompt() -> str:
         2. If URGENT: Use `insert_task` with `priority="high"`
         3. If NOT URGENT: Use `insert_task` with appropriate priority
         4. Always acknowledge the new request to the user
-        5. Complete your current task before switching"""
+        5. Complete your current task before switching
+
+        ## Parallel Task Execution (并行任务)
+
+        Sometimes you have multiple independent tasks that can be worked on simultaneously.
+        Use `start_parallel_tasks` or set `parallel_group` to enable parallel execution.
+
+        ### When to Use Parallel Execution
+
+        Use parallel tasks when:
+        - **Independent research or exploration** - gathering info from multiple sources
+        - **Subtasks under same parent** - that don't depend on each other
+        - **Multiple file analysis** - analyzing different parts of codebase
+        - **Information gathering** - when tasks can be done in any order
+
+        Do NOT use parallel when:
+        - **Task B needs result of Task A** - sequential dependency
+        - **Both tasks modify same file** - resource conflict
+        - **Sequential verification** - write → test → fix pattern
+
+        ### How to Start Parallel Tasks
+
+        **Option 1: Use `start_parallel_tasks`** (recommended for existing tasks)
+        ```
+        start_parallel_tasks(["task-1-a", "task-1-b", "task-1-c"], parallel_group="research")
+        ```
+
+        **Option 2: Set `parallel_group` when creating tasks**
+        ```
+        insert_task("1-a", "Research topic A", parallel_group="research")
+        insert_task("1-b", "Research topic B", parallel_group="research")
+        insert_task("1-c", "Research topic C", parallel_group="research")
+        ```
+
+        **Option 3: Update existing tasks**
+        ```
+        update_todo("task-1-a", status="in_progress", parallel_group="research")
+        update_todo("task-1-b", status="in_progress", parallel_group="research")
+        ```
+
+        ### Rules for Parallel Tasks
+
+        1. **Same group required**: All parallel in_progress tasks must have the same `parallel_group`
+        2. **One group at a time**: You cannot have tasks from different parallel groups running simultaneously
+        3. **Complete individually**: Use `complete_task` for each task as you finish them
+        4. **No preemption**: Finish parallel group before starting a new one
+
+        ### Example Workflow
+
+        ```
+        Initial plan:
+        [ ] Analyze stock tool requirements (id: 1)
+          [ ] Research user needs (id: 1-a)     ← can parallel
+          [ ] Study technical indicators (id: 1-b)  ← can parallel
+          [ ] Define buy criteria (id: 1-c)     ← can parallel
+
+        Start parallel:
+        start_parallel_tasks(["1-a", "1-b", "1-c"], parallel_group="research")
+
+        After starting:
+        [>] Research user needs (1-a, parallel_group="research")
+        [>] Study technical indicators (1-b, parallel_group="research")
+        [>] Define buy criteria (1-c, parallel_group="research")
+
+        Work on all three, completing each with complete_task when done.
+        ```"""
     ).strip()
 
 

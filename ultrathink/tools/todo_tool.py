@@ -67,6 +67,7 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
                 - parent_id (str, optional): Parent task ID for subtasks
                 - result_summary (str, optional): Brief summary of execution result
                 - is_complex (bool, optional): Mark as complex task requiring reflection
+                - parallel_group (str, optional): Group name for parallel execution
 
         Returns:
             Summary of the updated todo list with hierarchical display
@@ -84,6 +85,7 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
                         parent_id=item.get("parent_id"),
                         result_summary=item.get("result_summary"),
                         is_complex=item.get("is_complex", False),
+                        parallel_group=item.get("parallel_group"),
                     )
                 )
 
@@ -307,6 +309,7 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
         content: Optional[str] = None,
         priority: Optional[str] = None,
         result_summary: Optional[str] = None,
+        parallel_group: Optional[str] = None,
     ) -> str:
         """Update a single todo item without affecting other tasks.
 
@@ -319,6 +322,7 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
             content: New task description (optional)
             priority: New priority - "high", "medium", or "low" (optional)
             result_summary: Brief summary of execution result (optional)
+            parallel_group: Group name for parallel execution (optional)
 
         Returns:
             Confirmation with updated task details
@@ -355,6 +359,8 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
                 updates["priority"] = priority
             if result_summary is not None:
                 updates["result_summary"] = result_summary
+            if parallel_group is not None:
+                updates["parallel_group"] = parallel_group
 
             if not updates:
                 return f"No changes specified for task '{task_id}'."
@@ -413,6 +419,7 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
         parent_id: Optional[str] = None,
         insert_position: str = "last",
         is_complex: bool = False,
+        parallel_group: Optional[str] = None,
     ) -> str:
         """Insert a single task without rewriting the entire todo list.
 
@@ -431,6 +438,7 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
                 - "next": After the current in_progress task
                 - "after:<task_id>": After a specific task
             is_complex: Mark as complex task requiring reflection (default: False)
+            parallel_group: Group name for parallel execution (optional)
 
         Returns:
             Confirmation with updated task list
@@ -455,6 +463,7 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
                 priority=priority,
                 parent_id=parent_id,
                 is_complex=is_complex,
+                parallel_group=parallel_group,
             )
 
             # Insert
@@ -604,4 +613,118 @@ def create_todo_tools(cwd: Optional[Path] = None) -> List:
         except Exception as e:
             return f"Error reviewing todos: {e}"
 
-    return [write_todos, read_todos, complete_task, update_todo, insert_task, delete_task, review_todos]
+    @tool
+    def start_parallel_tasks(task_ids: List[str], parallel_group: str) -> str:
+        """Start multiple tasks in parallel.
+
+        Use this to execute independent tasks simultaneously. All tasks will be
+        marked as in_progress with the same parallel_group.
+
+        When to use:
+        - Independent research or exploration tasks
+        - Tasks that don't share resources or dependencies
+        - Information gathering from multiple sources
+        - Subtasks under the same parent that can be done together
+
+        When NOT to use:
+        - Tasks with dependencies (B needs A's result)
+        - Tasks that modify the same files
+        - Sequential verification (write → test → fix)
+
+        Args:
+            task_ids: List of task IDs to start in parallel
+            parallel_group: Name for this parallel execution group
+                           (e.g., "research", "gather-info", "parallel-1")
+
+        Returns:
+            Confirmation with list of started tasks
+        """
+        try:
+            if not task_ids:
+                return "Error: No task IDs provided."
+
+            if not parallel_group or not parallel_group.strip():
+                return "Error: parallel_group is required for parallel execution."
+
+            all_todos = load_todos(working_dir)
+
+            if not all_todos:
+                return "Error: No todos found."
+
+            # Find all tasks and validate
+            found_tasks = []
+            not_found = []
+            already_completed = []
+
+            for task_id in task_ids:
+                task = None
+                for todo in all_todos:
+                    if todo.id == task_id:
+                        task = todo
+                        break
+
+                if task is None:
+                    not_found.append(task_id)
+                elif task.status == "completed":
+                    already_completed.append(task_id)
+                else:
+                    found_tasks.append(task)
+
+            # Report errors
+            errors = []
+            if not_found:
+                errors.append(f"Tasks not found: {not_found}")
+            if already_completed:
+                errors.append(f"Tasks already completed: {already_completed}")
+
+            if not found_tasks:
+                return f"Error: No valid tasks to start. {' '.join(errors)}"
+
+            # Update all found tasks to in_progress with parallel_group
+            updated_ids = []
+            for i, todo in enumerate(all_todos):
+                if todo.id in [t.id for t in found_tasks]:
+                    all_todos[i] = todo.model_copy(
+                        update={
+                            "status": "in_progress",
+                            "parallel_group": parallel_group.strip(),
+                        }
+                    )
+                    updated_ids.append(todo.id)
+
+            # Validate
+            ok, message = validate_todos(all_todos)
+            if not ok:
+                return f"Error: {message}"
+
+            # Save
+            save_todos(all_todos, working_dir)
+
+            # Build response
+            output = [
+                f"Started {len(updated_ids)} tasks in parallel (group: {parallel_group}):",
+                "",
+            ]
+
+            for task_id in updated_ids:
+                task = next(t for t in all_todos if t.id == task_id)
+                output.append(f"  [>] {task.content} (id: {task.id})")
+
+            if errors:
+                output.append("")
+                output.append("Warnings: " + " ".join(errors))
+
+            output.extend([
+                "",
+                "--- Parallel Execution Tips ---",
+                "- Work on these tasks together, switching between them as needed",
+                "- Use complete_task for each task as you finish them",
+                "- All tasks in this group can remain in_progress simultaneously",
+            ])
+
+            return "\n".join(output)
+
+        except Exception as e:
+            return f"Error starting parallel tasks: {e}"
+
+    return [write_todos, read_todos, complete_task, update_todo, insert_task, delete_task, review_todos, start_parallel_tasks]

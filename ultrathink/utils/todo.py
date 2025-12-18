@@ -36,6 +36,12 @@ class TodoItem(BaseModel):
     result_summary: Optional[str] = Field(default=None, description="Brief summary of execution result")
     is_complex: bool = Field(default=False, description="Mark as complex task (requires reflection)")
 
+    # 并行执行相关字段
+    parallel_group: Optional[str] = Field(
+        default=None,
+        description="Tasks in the same group can run in parallel"
+    )
+
     model_config = ConfigDict(extra="ignore")
 
 
@@ -74,7 +80,14 @@ def validate_todos(
 
     in_progress = [todo for todo in todos if todo.status == "in_progress"]
     if len(in_progress) > 1:
-        return False, "Only one todo can be marked in_progress at a time."
+        # Check if all in_progress tasks are in the same parallel_group
+        groups = {t.parallel_group for t in in_progress}
+
+        # If any task has no parallel_group, or there are multiple different groups
+        if None in groups:
+            return False, "Multiple in_progress tasks require a parallel_group. Use start_parallel_tasks or set parallel_group."
+        if len(groups) > 1:
+            return False, f"Multiple in_progress tasks must be in the same parallel_group. Found: {sorted(g for g in groups if g)}"
 
     empty_contents = [todo.id for todo in todos if not todo.content.strip()]
     if empty_contents:
