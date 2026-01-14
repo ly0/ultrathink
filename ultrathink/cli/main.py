@@ -324,5 +324,93 @@ AI-powered coding assistant built on deepagent.
     console.print(Panel(info, border_style="cyan"))
 
 
+@cli.command()
+@click.option(
+    "--host",
+    type=str,
+    default="127.0.0.1",
+    help="Host to bind to",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=8000,
+    help="Port to bind to",
+)
+@click.option(
+    "--reload",
+    is_flag=True,
+    help="Enable auto-reload for development",
+)
+@click.option(
+    "--frontend/--no-frontend",
+    default=True,
+    help="Serve the frontend (default: True)",
+)
+@click.pass_context
+def serve(
+    ctx: click.Context,
+    host: str,
+    port: int,
+    reload: bool,
+    frontend: bool,
+) -> None:
+    """Start the ultrathink web server.
+
+    Starts the FastAPI server with optional frontend serving.
+    The API will be available at http://HOST:PORT/api/
+    The frontend (if enabled) will be at http://HOST:PORT/
+
+    Examples:
+
+        # Start with defaults (localhost:8000)
+        ultrathink serve
+
+        # Start on all interfaces
+        ultrathink serve --host 0.0.0.0
+
+        # Start with auto-reload for development
+        ultrathink serve --reload
+
+        # API only, no frontend
+        ultrathink serve --no-frontend
+    """
+    from rich.console import Console
+
+    console = Console()
+
+    try:
+        import uvicorn
+    except ImportError:
+        console.print(
+            "[red]Error: uvicorn not installed. "
+            "Install with: pip install 'ultrathink[web]'[/red]"
+        )
+        raise click.Abort()
+
+    from ultrathink.api.app import create_app
+
+    console.print(f"[bold cyan]Ultrathink Web Server[/bold cyan] v{__version__}")
+    console.print()
+
+    if frontend:
+        console.print(f"  [green]Frontend:[/green] http://{host}:{port}/")
+    console.print(f"  [green]API:[/green]      http://{host}:{port}/api/")
+    console.print(f"  [green]API Docs:[/green] http://{host}:{port}/api/docs")
+    console.print()
+
+    # Create app
+    app = create_app(serve_frontend=frontend)
+
+    # Run server
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info" if ctx.obj.get("verbose") else "warning",
+    )
+
+
 if __name__ == "__main__":
     cli()

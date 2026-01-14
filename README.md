@@ -28,6 +28,24 @@ AI-powered coding assistant built on [deepagent](https://github.com/langchain-ai
 - **MCP Integration** - Extend functionality with Model Context Protocol servers
 - **Python SDK** - Use programmatically in your applications
 
+### Web UI
+
+Modern web interface compatible with LangGraph SDK, providing a visual chat experience.
+
+![Ultrathink Web UI](assets/webui.png)
+
+**Features:**
+- Real-time streaming responses with Server-Sent Events (SSE)
+- Thread management with conversation history
+- Clean, responsive design built with Next.js and Tailwind CSS
+
+**Quick Start:**
+```bash
+ultrathink serve              # Start at http://localhost:8000
+ultrathink serve --port 3000  # Custom port
+ultrathink serve --no-frontend  # API only mode
+```
+
 ### CLI Features
 
 - **Slash Commands** - `/help`, `/clear`, `/models`, `/stats`, `/history`, `/compact`
@@ -252,6 +270,10 @@ You are a specialized agent for...
 
 ```
 ultrathink/
+├── api/                     # Web API (FastAPI)
+│   ├── app.py               # FastAPI application
+│   ├── routes/              # API endpoints
+│   └── services/            # Business logic
 ├── cli/
 │   ├── main.py              # CLI entry point
 │   ├── commands/            # Slash commands
@@ -269,8 +291,12 @@ ultrathink/
 │   ├── filesystem.py
 │   └── ask_user.py
 ├── middleware/              # Agent middleware
-└── sdk/
-    └── client.py            # Python SDK
+├── sdk/
+│   └── client.py            # Python SDK
+└── web/                     # Web UI (Next.js)
+    ├── src/                 # React components
+    ├── public/              # Static assets
+    └── out/                 # Built frontend (auto-generated)
 ```
 
 ## Development

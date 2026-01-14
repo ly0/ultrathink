@@ -51,8 +51,42 @@ if not os.environ.get("ULTRATHINK_DEBUG"):
         _logger.handlers = []
         _logger.propagate = False
 
-from ultrathink.core.agent_factory import create_ultrathink_agent
-from ultrathink.sdk.client import UltrathinkClient
+# Lazy imports to avoid breaking the API when there are dependency conflicts
+# These will be loaded on first access
+_create_ultrathink_agent = None
+_UltrathinkClient = None
+
+
+def __getattr__(name):
+    """Lazy loading of optional components that may have dependency issues."""
+    global _create_ultrathink_agent, _UltrathinkClient
+
+    if name == "create_ultrathink_agent":
+        if _create_ultrathink_agent is None:
+            try:
+                from ultrathink.core.agent_factory import create_ultrathink_agent as _func
+                _create_ultrathink_agent = _func
+            except ImportError as e:
+                raise ImportError(
+                    f"Cannot import create_ultrathink_agent due to dependency conflict: {e}. "
+                    "Please check your langchain and pydantic versions."
+                ) from e
+        return _create_ultrathink_agent
+
+    if name == "UltrathinkClient":
+        if _UltrathinkClient is None:
+            try:
+                from ultrathink.sdk.client import UltrathinkClient as _cls
+                _UltrathinkClient = _cls
+            except ImportError as e:
+                raise ImportError(
+                    f"Cannot import UltrathinkClient due to dependency conflict: {e}. "
+                    "Please check your langchain and pydantic versions."
+                ) from e
+        return _UltrathinkClient
+
+    raise AttributeError(f"module 'ultrathink' has no attribute '{name}'")
+
 
 __all__ = [
     "__version__",
