@@ -25,14 +25,21 @@ export type StateType = {
   ui?: any;
 };
 
+export interface LangSmithConfig {
+  apiKey?: string;
+  projectName?: string;
+}
+
 export function useChat({
   activeAssistant,
   onHistoryRevalidate,
   thread,
+  langsmithConfig,
 }: {
   activeAssistant: Assistant | null;
   onHistoryRevalidate?: () => void;
   thread?: UseStreamThread<StateType>;
+  langsmithConfig?: LangSmithConfig;
 }) {
   const [threadId, setThreadId] = useQueryState("threadId");
   const client = useClient();
@@ -62,13 +69,21 @@ export function useChat({
           optimisticValues: (prev) => ({
             messages: [...(prev.messages ?? []), newMessage],
           }),
-          config: { ...(activeAssistant?.config ?? {}), recursion_limit: 100 },
+          config: {
+            ...(activeAssistant?.config ?? {}),
+            recursion_limit: 100,
+            configurable: {
+              ...((activeAssistant?.config as any)?.configurable ?? {}),
+              langsmith_api_key: langsmithConfig?.apiKey,
+              langsmith_project: langsmithConfig?.projectName,
+            },
+          },
         }
       );
       // Update thread list immediately when sending a message
       onHistoryRevalidate?.();
     },
-    [stream, activeAssistant?.config, onHistoryRevalidate]
+    [stream, activeAssistant?.config, onHistoryRevalidate, langsmithConfig]
   );
 
   const runSingleStep = useCallback(
@@ -115,6 +130,11 @@ export function useChat({
         config: {
           ...(activeAssistant?.config || {}),
           recursion_limit: 100,
+          configurable: {
+            ...((activeAssistant?.config as any)?.configurable ?? {}),
+            langsmith_api_key: langsmithConfig?.apiKey,
+            langsmith_project: langsmithConfig?.projectName,
+          },
         },
         ...(hasTaskToolCall
           ? { interruptAfter: ["tools"] }
@@ -123,7 +143,7 @@ export function useChat({
       // Update thread list when continuing stream
       onHistoryRevalidate?.();
     },
-    [stream, activeAssistant?.config, onHistoryRevalidate]
+    [stream, activeAssistant?.config, onHistoryRevalidate, langsmithConfig]
   );
 
   const markCurrentThreadAsResolved = useCallback(() => {

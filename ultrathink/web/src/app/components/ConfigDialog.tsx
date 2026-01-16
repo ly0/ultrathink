@@ -36,12 +36,16 @@ export function ConfigDialog({
   const [langsmithApiKey, setLangsmithApiKey] = useState(
     initialConfig?.langsmithApiKey || ""
   );
+  const [langsmithProjectName, setLangsmithProjectName] = useState(
+    initialConfig?.langsmithProjectName || ""
+  );
 
   useEffect(() => {
     if (open && initialConfig) {
       setDeploymentUrl(initialConfig.deploymentUrl);
       setAssistantId(initialConfig.assistantId);
       setLangsmithApiKey(initialConfig.langsmithApiKey || "");
+      setLangsmithProjectName(initialConfig.langsmithProjectName || "");
     }
   }, [open, initialConfig]);
 
@@ -55,6 +59,7 @@ export function ConfigDialog({
       deploymentUrl,
       assistantId,
       langsmithApiKey: langsmithApiKey || undefined,
+      langsmithProjectName: langsmithProjectName || undefined,
     });
     onOpenChange(false);
   };
@@ -102,6 +107,18 @@ export function ConfigDialog({
               placeholder="lsv2_pt_..."
               value={langsmithApiKey}
               onChange={(e) => setLangsmithApiKey(e.target.value)}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="langsmithProjectName">
+              LangSmith Project Name{" "}
+              <span className="text-muted-foreground">(Optional)</span>
+            </Label>
+            <Input
+              id="langsmithProjectName"
+              placeholder="my-project"
+              value={langsmithProjectName}
+              onChange={(e) => setLangsmithProjectName(e.target.value)}
             />
           </div>
         </div>

@@ -17,11 +17,17 @@ import { ThreadList } from "@/app/components/ThreadList";
 import { ChatProvider } from "@/providers/ChatProvider";
 import { ChatInterface } from "@/app/components/ChatInterface";
 
+interface LangSmithConfig {
+  apiKey?: string;
+  projectName?: string;
+}
+
 interface HomePageInnerProps {
   config: StandaloneConfig;
   configDialogOpen: boolean;
   setConfigDialogOpen: (open: boolean) => void;
   handleSaveConfig: (config: StandaloneConfig) => void;
+  langsmithConfig?: LangSmithConfig;
 }
 
 function HomePageInner({
@@ -29,6 +35,7 @@ function HomePageInner({
   configDialogOpen,
   setConfigDialogOpen,
   handleSaveConfig,
+  langsmithConfig,
 }: HomePageInnerProps) {
   const client = useClient();
   const [threadId, setThreadId] = useQueryState("threadId");
@@ -192,6 +199,7 @@ function HomePageInner({
               <ChatProvider
                 activeAssistant={assistant}
                 onHistoryRevalidate={() => mutateThreads?.()}
+                langsmithConfig={langsmithConfig}
               >
                 <ChatInterface assistant={assistant} />
               </ChatProvider>
@@ -234,8 +242,11 @@ function HomePageContent() {
     setConfig(newConfig);
   }, []);
 
-  const langsmithApiKey =
-    config?.langsmithApiKey || process.env.NEXT_PUBLIC_LANGSMITH_API_KEY || "";
+  // Prepare LangSmith config for tracing
+  const langsmithConfig: LangSmithConfig | undefined = (config?.langsmithApiKey || process.env.NEXT_PUBLIC_LANGSMITH_API_KEY) ? {
+    apiKey: config?.langsmithApiKey || process.env.NEXT_PUBLIC_LANGSMITH_API_KEY,
+    projectName: config?.langsmithProjectName || process.env.NEXT_PUBLIC_LANGSMITH_PROJECT,
+  } : undefined;
 
   if (!config) {
     return (
@@ -264,15 +275,13 @@ function HomePageContent() {
   }
 
   return (
-    <ClientProvider
-      deploymentUrl={config.deploymentUrl}
-      apiKey={langsmithApiKey}
-    >
+    <ClientProvider deploymentUrl={config.deploymentUrl}>
       <HomePageInner
         config={config}
         configDialogOpen={configDialogOpen}
         setConfigDialogOpen={setConfigDialogOpen}
         handleSaveConfig={handleSaveConfig}
+        langsmithConfig={langsmithConfig}
       />
     </ClientProvider>
   );

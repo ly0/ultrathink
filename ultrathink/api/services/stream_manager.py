@@ -5,9 +5,11 @@ Manages streaming execution of agent runs with SSE output.
 
 import json
 import logging
+import os
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, Generator, List, Optional
 from uuid import uuid4
 
 from ultrathink.api.models.message import Message, ToolCall
@@ -22,6 +24,57 @@ from ultrathink.api.models.run import (
 )
 from ultrathink.api.models.thread import Thread
 from ultrathink.api.services.thread_store import ThreadStore, get_thread_store
+
+
+@contextmanager
+def langsmith_tracing_context(
+    api_key: Optional[str] = None,
+    project: Optional[str] = None,
+) -> Generator[None, None, None]:
+    """Context manager to enable LangSmith tracing with specific config.
+
+    Falls back to environment variables if not provided.
+    WebUI config takes priority over environment variables.
+
+    Args:
+        api_key: LangSmith API key from WebUI config.
+        project: LangSmith project name from WebUI config.
+    """
+    # Save original env vars
+    original_tracing = os.environ.get("LANGCHAIN_TRACING_V2")
+    original_api_key = os.environ.get("LANGCHAIN_API_KEY")
+    original_project = os.environ.get("LANGCHAIN_PROJECT")
+
+    try:
+        # Determine effective values (WebUI config > env vars)
+        effective_api_key = api_key or os.environ.get("LANGSMITH_API_KEY")
+        effective_project = project or os.environ.get("LANGSMITH_PROJECT") or "ultrathink"
+
+        if effective_api_key:
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"
+            os.environ["LANGCHAIN_API_KEY"] = effective_api_key
+            os.environ["LANGCHAIN_PROJECT"] = effective_project
+            logging.info(f"LangSmith tracing enabled for project: {effective_project}")
+        else:
+            logging.debug("LangSmith tracing not configured (no API key)")
+
+        yield
+    finally:
+        # Restore original env vars
+        if original_tracing is None:
+            os.environ.pop("LANGCHAIN_TRACING_V2", None)
+        else:
+            os.environ["LANGCHAIN_TRACING_V2"] = original_tracing
+
+        if original_api_key is None:
+            os.environ.pop("LANGCHAIN_API_KEY", None)
+        else:
+            os.environ["LANGCHAIN_API_KEY"] = original_api_key
+
+        if original_project is None:
+            os.environ.pop("LANGCHAIN_PROJECT", None)
+        else:
+            os.environ["LANGCHAIN_PROJECT"] = original_project
 
 
 class StreamManager:
@@ -300,6 +353,20 @@ class StreamManager:
         # Check if we should interrupt before tools
         should_interrupt_before_tools = "tools" in interrupt_before
 
+        # Extract LangSmith config from configurable and set up tracing
+        langsmith_api_key = config.configurable.get("langsmith_api_key")
+        langsmith_project = config.configurable.get("langsmith_project")
+
+        # Set up LangSmith tracing if configured
+        effective_api_key = langsmith_api_key or os.environ.get("LANGSMITH_API_KEY")
+        effective_project = langsmith_project or os.environ.get("LANGSMITH_PROJECT") or "ultrathink"
+
+        if effective_api_key:
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"
+            os.environ["LANGCHAIN_API_KEY"] = effective_api_key
+            os.environ["LANGCHAIN_PROJECT"] = effective_project
+            logging.info(f"LangSmith tracing enabled for project: {effective_project}")
+
         # Try to use the real ultrathink agent
         agent = None
         session = None
@@ -308,6 +375,23 @@ class StreamManager:
         try:
             from ultrathink.core.agent_factory import create_ultrathink_agent
             from ultrathink.core.session import ConversationSession
+            from ultrathink.core.config import config_manager, get_model_string
+            from ultrathink.mcp.config_loader import load_mcp_config
+
+            # Read configuration (same as CLI)
+            model_string = get_model_string("main")
+            profile = config_manager.get_model_profile("main")
+            base_url = profile.api_base if profile else None
+
+            # Log configuration for debugging
+            logging.info(f"Creating agent with model: {model_string}, base_url: {base_url}")
+            if not model_string:
+                logging.warning("No model configured, check ~/.ultrathink.json")
+
+            # Load MCP config (optional, like CLI)
+            mcp_config = load_mcp_config(Path.cwd())
+            if mcp_config:
+                logging.info(f"Loaded MCP config with {len(mcp_config)} server(s)")
 
             # Create session and add history messages
             session = ConversationSession()
@@ -319,26 +403,26 @@ class StreamManager:
                 elif msg_type == "ai" and isinstance(content, str):
                     session.add_message("assistant", content)
 
-            # Use the same config system as CLI
-            # Don't pass model/base_url - let it use ~/.ultrathink.json config
+            # Use the same config system as CLI - explicitly pass model and base_url
             agent = await asyncio.wait_for(
                 create_ultrathink_agent(
+                    model=model_string,
+                    base_url=base_url,
                     session=session,
                     safe_mode=True,
                     verbose=False,
                     cwd=Path.cwd(),
-                    # model=None → uses config_manager's "main" profile
-                    # base_url=None → uses profile's api_base
+                    mcp_config=mcp_config,
                 ),
-                timeout=30.0  # 30 second timeout for agent creation
+                timeout=60.0  # 60 second timeout for agent creation
             )
             use_demo_mode = False
             logging.info("Real agent created successfully, using configured model")
 
         except asyncio.TimeoutError:
-            logging.warning("Agent creation timed out, falling back to demo mode")
+            logging.exception("Agent creation timed out, falling back to demo mode")
         except Exception as e:
-            logging.warning(f"Agent creation failed: {e}, falling back to demo mode")
+            logging.exception(f"Agent creation failed: {e}, falling back to demo mode")
 
         if agent is not None and not use_demo_mode:
             # Use real agent

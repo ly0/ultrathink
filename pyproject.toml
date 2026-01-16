@@ -45,6 +45,8 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "sse-starlette>=2.0.0",
     "websockets>=12.0",
+    # LangSmith tracing
+    "langsmith>=0.1.0",
 ]
 
 [project.optional-dependencies]

@@ -12,7 +12,7 @@ const ClientContext = createContext<ClientContextValue | null>(null);
 interface ClientProviderProps {
   children: ReactNode;
   deploymentUrl: string;
-  apiKey: string;
+  apiKey?: string;
 }
 
 export function ClientProvider({
@@ -21,12 +21,15 @@ export function ClientProvider({
   apiKey,
 }: ClientProviderProps) {
   const client = useMemo(() => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (apiKey) {
+      headers["X-Api-Key"] = apiKey;
+    }
     return new Client({
       apiUrl: deploymentUrl,
-      defaultHeaders: {
-        "Content-Type": "application/json",
-        "X-Api-Key": apiKey,
-      },
+      defaultHeaders: headers,
     });
   }, [deploymentUrl, apiKey]);
 
